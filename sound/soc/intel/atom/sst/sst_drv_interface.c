@@ -42,6 +42,11 @@
 #define MIN_FRAGMENT_SIZE (50 * 1024)
 #define MAX_FRAGMENT_SIZE (1024 * 1024)
 #define SST_GET_BYTES_PER_SAMPLE(pcm_wd_sz)  (((pcm_wd_sz + 15) >> 4) << 1)
+#ifdef CONFIG_PM
+#define GET_USAGE_COUNT(dev) (atomic_read(&dev->power.usage_count))
+#else
+#define GET_USAGE_COUNT(dev) 1
+#endif
 
 int free_stream_context(struct intel_sst_drv *ctx, unsigned int str_id)
 {
@@ -141,17 +146,12 @@ static int sst_power_control(struct device *dev, bool state)
 	int ret = 0;
 	int usage_count = 0;
 
-#ifdef CONFIG_PM
-	usage_count = atomic_read(&dev->power.usage_count);
-#else
-	usage_count = 1;
-#endif
-
 	if (state == true) {
 		ret = pm_runtime_get_sync(dev);
-
+		usage_count = GET_USAGE_COUNT(dev);
 		dev_dbg(ctx->dev, "Enable: pm usage count: %d\n", usage_count);
 		if (ret < 0) {
+			pm_runtime_put_sync(dev);
 			dev_err(ctx->dev, "Runtime get failed with err: %d\n", ret);
 			return ret;
 		}
@@ -164,6 +164,7 @@ static int sst_power_control(struct device *dev, bool state)
 			}
 		}
 	} else {
+		usage_count = GET_USAGE_COUNT(dev);
 		dev_dbg(ctx->dev, "Disable: pm usage count: %d\n", usage_count);
 		return sst_pm_runtime_put(ctx);
 	}
@@ -204,8 +205,10 @@ static int sst_cdev_open(struct device *dev,
 	struct intel_sst_drv *ctx = dev_get_drvdata(dev);
 
 	retval = pm_runtime_get_sync(ctx->dev);
-	if (retval < 0)
+	if (retval < 0) {
+		pm_runtime_put_sync(ctx->dev);
 		return retval;
+	}
 
 	str_id = sst_get_stream(ctx, str_params);
 	if (str_id > 0) {
@@ -235,16 +238,7 @@ static int sst_cdev_close(struct device *dev, unsigned int str_id)
 		return -EINVAL;
 	}
 
-	if (stream->status == STREAM_RESET) {
-		dev_dbg(dev, "stream in reset state...\n");
-		stream->status = STREAM_UN_INIT;
-
-		retval = 0;
-		goto put;
-	}
-
 	retval = sst_free_stream(ctx, str_id);
-put:
 	stream->compr_cb_param = NULL;
 	stream->compr_cb = NULL;
 
@@ -253,7 +247,6 @@ put:
 
 	dev_dbg(dev, "End\n");
 	return retval;
-
 }
 
 static int sst_cdev_ack(struct device *dev, unsigned int str_id,
@@ -273,17 +266,15 @@ static int sst_cdev_ack(struct device *dev, unsigned int str_id,
 	stream->cumm_bytes += bytes;
 	dev_dbg(dev, "bytes copied %d inc by %ld\n", stream->cumm_bytes, bytes);
 
-	memcpy_fromio(&fw_tstamp,
-		((void *)(ctx->mailbox + ctx->tstamp)
-		+(str_id * sizeof(fw_tstamp))),
-		sizeof(fw_tstamp));
+	addr =  ((void __iomem *)(ctx->mailbox + ctx->tstamp)) +
+		(str_id * sizeof(fw_tstamp));
+
+	memcpy_fromio(&fw_tstamp, addr, sizeof(fw_tstamp));
 
 	fw_tstamp.bytes_copied = stream->cumm_bytes;
 	dev_dbg(dev, "bytes sent to fw %llu inc by %ld\n",
 			fw_tstamp.bytes_copied, bytes);
 
-	addr =  ((void *)(ctx->mailbox + ctx->tstamp)) +
-			(str_id * sizeof(fw_tstamp));
 	offset =  offsetof(struct snd_sst_tstamp, bytes_copied);
 	sst_shim_write(addr, offset, fw_tstamp.bytes_copied);
 	return 0;
@@ -367,11 +358,12 @@ static int sst_cdev_tstamp(struct device *dev, unsigned int str_id,
 	struct snd_sst_tstamp fw_tstamp = {0,};
 	struct stream_info *stream;
 	struct intel_sst_drv *ctx = dev_get_drvdata(dev);
+	void __iomem *addr;
 
-	memcpy_fromio(&fw_tstamp,
-		((void *)(ctx->mailbox + ctx->tstamp)
-		+(str_id * sizeof(fw_tstamp))),
-		sizeof(fw_tstamp));
+	addr = (void __iomem *)(ctx->mailbox + ctx->tstamp) +
+		(str_id * sizeof(fw_tstamp));
+
+	memcpy_fromio(&fw_tstamp, addr, sizeof(fw_tstamp));
 
 	stream = get_stream_info(ctx, str_id);
 	if (!stream)
@@ -404,7 +396,7 @@ static int sst_cdev_caps(struct snd_compr_caps *caps)
 	return 0;
 }
 
-static struct snd_compr_codec_caps caps_mp3 = {
+static const struct snd_compr_codec_caps caps_mp3 = {
 	.num_descriptors = 1,
 	.descriptor[0].max_ch = 2,
 	.descriptor[0].sample_rates[0] = 48000,
@@ -421,7 +413,7 @@ static struct snd_compr_codec_caps caps_mp3 = {
 	.descriptor[0].formats = 0,
 };
 
-static struct snd_compr_codec_caps caps_aac = {
+static const struct snd_compr_codec_caps caps_aac = {
 	.num_descriptors = 2,
 	.descriptor[1].max_ch = 2,
 	.descriptor[0].sample_rates[0] = 48000,
@@ -483,16 +475,7 @@ static int sst_close_pcm_stream(struct device *dev, unsigned int str_id)
 		return -EINVAL;
 	}
 
-	if (stream->status == STREAM_RESET) {
-		/* silently fail here as we have cleaned the stream earlier */
-		dev_dbg(ctx->dev, "stream in reset state...\n");
-
-		retval = 0;
-		goto put;
-	}
-
 	retval = free_stream_context(ctx, str_id);
-put:
 	stream->pcm_substream = NULL;
 	stream->status = STREAM_UN_INIT;
 	stream->period_elapsed = NULL;
@@ -533,7 +516,7 @@ static inline int sst_calc_tstamp(struct intel_sst_drv *ctx,
 
 	info->buffer_ptr = pointer_samples / substream->runtime->channels;
 
-	info->pcm_delay = delay_frames / substream->runtime->channels;
+	info->pcm_delay = delay_frames;
 	dev_dbg(ctx->dev, "buffer ptr %llu pcm_delay rep: %llu\n",
 			info->buffer_ptr, info->pcm_delay);
 	return 0;
@@ -546,6 +529,7 @@ static int sst_read_timestamp(struct device *dev, struct pcm_stream_info *info)
 	struct snd_sst_tstamp fw_tstamp;
 	unsigned int str_id;
 	struct intel_sst_drv *ctx = dev_get_drvdata(dev);
+	void __iomem *addr;
 
 	str_id = info->str_id;
 	stream = get_stream_info(ctx, str_id);
@@ -556,10 +540,11 @@ static int sst_read_timestamp(struct device *dev, struct pcm_stream_info *info)
 		return -EINVAL;
 	substream = stream->pcm_substream;
 
-	memcpy_fromio(&fw_tstamp,
-		((void *)(ctx->mailbox + ctx->tstamp)
-			+ (str_id * sizeof(fw_tstamp))),
-		sizeof(fw_tstamp));
+	addr = (void __iomem *)(ctx->mailbox + ctx->tstamp) +
+		(str_id * sizeof(fw_tstamp));
+
+	memcpy_fromio(&fw_tstamp, addr, sizeof(fw_tstamp));
+
 	return sst_calc_tstamp(ctx, info, substream, &fw_tstamp);
 }
 
@@ -672,8 +657,10 @@ static int sst_send_byte_stream(struct device *dev,
 	if (NULL == bytes)
 		return -EINVAL;
 	ret_val = pm_runtime_get_sync(ctx->dev);
-	if (ret_val < 0)
+	if (ret_val < 0) {
+		pm_runtime_put_sync(ctx->dev);
 		return ret_val;
+	}
 
 	ret_val = sst_send_byte_stream_mrfld(ctx, bytes);
 	sst_pm_runtime_put(ctx);

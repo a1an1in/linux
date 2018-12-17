@@ -7,7 +7,8 @@
 #include <linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/tracehook.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
+#include <asm/ptrace-abi.h>
 
 void user_enable_single_step(struct task_struct *child)
 {
@@ -114,24 +115,17 @@ long arch_ptrace(struct task_struct *child, long request,
 static void send_sigtrap(struct task_struct *tsk, struct uml_pt_regs *regs,
 		  int error_code)
 {
-	struct siginfo info;
-
-	memset(&info, 0, sizeof(info));
-	info.si_signo = SIGTRAP;
-	info.si_code = TRAP_BRKPT;
-
-	/* User-mode eip? */
-	info.si_addr = UPT_IS_USER(regs) ? (void __user *) UPT_IP(regs) : NULL;
-
 	/* Send us the fake SIGTRAP */
-	force_sig_info(SIGTRAP, &info, tsk);
+	force_sig_fault(SIGTRAP, TRAP_BRKPT,
+			/* User-mode eip? */
+			UPT_IS_USER(regs) ? (void __user *) UPT_IP(regs) : NULL, tsk);
 }
 
 /*
  * XXX Check PT_DTRACE vs TIF_SINGLESTEP for singlestepping check and
  * PT_PTRACED vs TIF_SYSCALL_TRACE for syscall tracing check
  */
-void syscall_trace_enter(struct pt_regs *regs)
+int syscall_trace_enter(struct pt_regs *regs)
 {
 	audit_syscall_entry(UPT_SYSCALL_NR(&regs->regs),
 			    UPT_SYSCALL_ARG1(&regs->regs),
@@ -140,9 +134,9 @@ void syscall_trace_enter(struct pt_regs *regs)
 			    UPT_SYSCALL_ARG4(&regs->regs));
 
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
-		return;
+		return 0;
 
-	tracehook_report_syscall_entry(regs);
+	return tracehook_report_syscall_entry(regs);
 }
 
 void syscall_trace_leave(struct pt_regs *regs)

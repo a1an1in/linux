@@ -1,17 +1,14 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Renesas SuperH DMA Engine support for r8a73a4 (APE6) SoCs
  *
  * Copyright (C) 2013 Renesas Electronics, Inc.
- *
- * This is free software; you can redistribute it and/or modify it under the
- * terms of version 2 the GNU General Public License as published by the Free
- * Software Foundation.
  */
 #include <linux/sh_dma.h>
 
 #include "shdma-arm.h"
 
-const unsigned int dma_ts_shift[] = SH_DMAE_TS_SHIFT;
+static const unsigned int dma_ts_shift[] = SH_DMAE_TS_SHIFT;
 
 static const struct sh_dmae_slave_config dma_slaves[] = {
 	{

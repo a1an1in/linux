@@ -1,19 +1,9 @@
-/*
- * extcon-max8997.c - MAX8997 extcon driver to support MAX8997 MUIC
- *
- *  Copyright (C) 2012 Samsung Electronics
- *  Donggeun Kim <dg77.kim@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- */
+// SPDX-License-Identifier: GPL-2.0+
+//
+// extcon-max8997.c - MAX8997 extcon driver to support MAX8997 MUIC
+//
+//  Copyright (C) 2012 Samsung Electronics
+//  Donggeun Kim <dg77.kim@samsung.com>
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -25,7 +15,7 @@
 #include <linux/kobject.h>
 #include <linux/mfd/max8997.h>
 #include <linux/mfd/max8997-private.h>
-#include <linux/extcon.h>
+#include <linux/extcon-provider.h>
 #include <linux/irqdomain.h>
 
 #define	DEV_NAME			"max8997-muic"
@@ -145,34 +135,18 @@ struct max8997_muic_info {
 	int path_uart;
 };
 
-enum {
-	EXTCON_CABLE_USB = 0,
-	EXTCON_CABLE_USB_HOST,
-	EXTCON_CABLE_TA,
-	EXTCON_CABLE_FAST_CHARGER,
-	EXTCON_CABLE_SLOW_CHARGER,
-	EXTCON_CABLE_CHARGE_DOWNSTREAM,
-	EXTCON_CABLE_MHL,
-	EXTCON_CABLE_DOCK_DESK,
-	EXTCON_CABLE_DOCK_CARD,
-	EXTCON_CABLE_JIG,
-
-	_EXTCON_CABLE_NUM,
-};
-
-static const char *max8997_extcon_cable[] = {
-	[EXTCON_CABLE_USB]			= "USB",
-	[EXTCON_CABLE_USB_HOST]			= "USB-Host",
-	[EXTCON_CABLE_TA]			= "TA",
-	[EXTCON_CABLE_FAST_CHARGER]		= "Fast-charger",
-	[EXTCON_CABLE_SLOW_CHARGER]		= "Slow-charger",
-	[EXTCON_CABLE_CHARGE_DOWNSTREAM]	= "Charge-downstream",
-	[EXTCON_CABLE_MHL]			= "MHL",
-	[EXTCON_CABLE_DOCK_DESK]		= "Dock-Desk",
-	[EXTCON_CABLE_DOCK_CARD]		= "Dock-Card",
-	[EXTCON_CABLE_JIG]			= "JIG",
-
-	NULL,
+static const unsigned int max8997_extcon_cable[] = {
+	EXTCON_USB,
+	EXTCON_USB_HOST,
+	EXTCON_CHG_USB_SDP,
+	EXTCON_CHG_USB_DCP,
+	EXTCON_CHG_USB_FAST,
+	EXTCON_CHG_USB_SLOW,
+	EXTCON_CHG_USB_CDP,
+	EXTCON_DISP_MHL,
+	EXTCON_DOCK,
+	EXTCON_JIG,
+	EXTCON_NONE,
 };
 
 /*
@@ -220,7 +194,7 @@ static int max8997_muic_set_debounce_time(struct max8997_muic_info *info,
 static int max8997_muic_set_path(struct max8997_muic_info *info,
 		u8 val, bool attached)
 {
-	int ret = 0;
+	int ret;
 	u8 ctrl1, ctrl2 = 0;
 
 	if (attached)
@@ -347,10 +321,12 @@ static int max8997_muic_handle_usb(struct max8997_muic_info *info,
 
 	switch (usb_type) {
 	case MAX8997_USB_HOST:
-		extcon_set_cable_state(info->edev, "USB-Host", attached);
+		extcon_set_state_sync(info->edev, EXTCON_USB_HOST, attached);
 		break;
 	case MAX8997_USB_DEVICE:
-		extcon_set_cable_state(info->edev, "USB", attached);
+		extcon_set_state_sync(info->edev, EXTCON_USB, attached);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_SDP,
+					attached);
 		break;
 	default:
 		dev_err(info->dev, "failed to detect %s usb cable\n",
@@ -374,10 +350,8 @@ static int max8997_muic_handle_dock(struct max8997_muic_info *info,
 
 	switch (cable_type) {
 	case MAX8997_MUIC_ADC_AV_CABLE_NOLOAD:
-		extcon_set_cable_state(info->edev, "Dock-desk", attached);
-		break;
 	case MAX8997_MUIC_ADC_FACTORY_MODE_UART_ON:
-		extcon_set_cable_state(info->edev, "Dock-card", attached);
+		extcon_set_state_sync(info->edev, EXTCON_DOCK, attached);
 		break;
 	default:
 		dev_err(info->dev, "failed to detect %s dock device\n",
@@ -400,7 +374,7 @@ static int max8997_muic_handle_jig_uart(struct max8997_muic_info *info,
 		return ret;
 	}
 
-	extcon_set_cable_state(info->edev, "JIG", attached);
+	extcon_set_state_sync(info->edev, EXTCON_JIG, attached);
 
 	return 0;
 }
@@ -422,7 +396,7 @@ static int max8997_muic_adc_handler(struct max8997_muic_info *info)
 			return ret;
 		break;
 	case MAX8997_MUIC_ADC_MHL:
-		extcon_set_cable_state(info->edev, "MHL", attached);
+		extcon_set_state_sync(info->edev, EXTCON_DISP_MHL, attached);
 		break;
 	case MAX8997_MUIC_ADC_FACTORY_MODE_USB_OFF:
 	case MAX8997_MUIC_ADC_FACTORY_MODE_USB_ON:
@@ -505,17 +479,20 @@ static int max8997_muic_chg_handler(struct max8997_muic_info *info)
 		}
 		break;
 	case MAX8997_CHARGER_TYPE_DOWNSTREAM_PORT:
-		extcon_set_cable_state(info->edev,
-				      "Charge-downstream", attached);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_CDP,
+					attached);
 		break;
 	case MAX8997_CHARGER_TYPE_DEDICATED_CHG:
-		extcon_set_cable_state(info->edev, "TA", attached);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_DCP,
+					attached);
 		break;
 	case MAX8997_CHARGER_TYPE_500MA:
-		extcon_set_cable_state(info->edev, "Slow-charger", attached);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_SLOW,
+					attached);
 		break;
 	case MAX8997_CHARGER_TYPE_1A:
-		extcon_set_cable_state(info->edev, "Fast-charger", attached);
+		extcon_set_state_sync(info->edev, EXTCON_CHG_USB_FAST,
+					attached);
 		break;
 	default:
 		dev_err(info->dev,
@@ -700,7 +677,6 @@ static int max8997_muic_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto err_irq;
 	}
-	info->edev->name = DEV_NAME;
 
 	ret = devm_extcon_dev_register(&pdev->dev, info->edev);
 	if (ret) {

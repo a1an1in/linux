@@ -11,6 +11,9 @@
  * GNU General Public License for more details.
  */
 
+#include "saa7134.h"
+#include "saa7134-reg.h"
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -27,8 +30,6 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 
-#include "saa7134.h"
-#include "saa7134-reg.h"
 #include "go7007-priv.h"
 
 /*#define GO7007_HPI_DEBUG*/
@@ -288,9 +289,9 @@ static int saa7134_go7007_stream_start(struct go7007 *go)
 
 	/* Set up transfer block size */
 	saa_writeb(SAA7134_TS_PARALLEL_SERIAL, 128 - 1);
-	saa_writeb(SAA7134_TS_DMA0, (PAGE_SIZE >> 7) - 1);
-	saa_writeb(SAA7134_TS_DMA1, 0);
-	saa_writeb(SAA7134_TS_DMA2, 0);
+	saa_writeb(SAA7134_TS_DMA0, ((PAGE_SIZE >> 7) - 1) & 0xff);
+	saa_writeb(SAA7134_TS_DMA1, (PAGE_SIZE >> 15) & 0xff);
+	saa_writeb(SAA7134_TS_DMA2, (PAGE_SIZE >> 31) & 0x3f);
 
 	/* Enable video streaming mode */
 	saa_writeb(SAA7134_GPIO_GPSTATUS2, GPIO_COMMAND_VIDEO);
@@ -377,7 +378,7 @@ static int saa7134_go7007_send_firmware(struct go7007 *go, u8 *data, int len)
 	return 0;
 }
 
-static struct go7007_hpi_ops saa7134_go7007_hpi_ops = {
+static const struct go7007_hpi_ops saa7134_go7007_hpi_ops = {
 	.interface_reset	= saa7134_go7007_interface_reset,
 	.write_interrupt	= saa7134_go7007_write_interrupt,
 	.read_interrupt		= saa7134_go7007_read_interrupt,
@@ -434,7 +435,7 @@ static int saa7134_go7007_init(struct saa7134_dev *dev)
 
 	go->board_id = GO7007_BOARDID_PCI_VOYAGER;
 	snprintf(go->bus_info, sizeof(go->bus_info), "PCI:%s", pci_name(dev->pci));
-	strlcpy(go->name, saa7134_boards[dev->board].name, sizeof(go->name));
+	strscpy(go->name, saa7134_boards[dev->board].name, sizeof(go->name));
 	go->hpi_ops = &saa7134_go7007_hpi_ops;
 	go->hpi_context = saa;
 	saa->dev = dev;

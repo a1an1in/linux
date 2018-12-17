@@ -163,7 +163,7 @@ int mc13xxx_irq_request(struct mc13xxx *mc13xxx, int irq,
 	int virq = regmap_irq_get_virq(mc13xxx->irq_data, irq);
 
 	return devm_request_threaded_irq(mc13xxx->dev, virq, NULL, handler,
-					 0, name, dev);
+					 IRQF_ONESHOT, name, dev);
 }
 EXPORT_SYMBOL(mc13xxx_irq_request);
 
@@ -276,11 +276,25 @@ int mc13xxx_adc_do_conversion(struct mc13xxx *mc13xxx, unsigned int mode,
 
 	mc13xxx_reg_read(mc13xxx, MC13XXX_ADC0, &old_adc0);
 
-	adc0 = MC13XXX_ADC0_ADINC1 | MC13XXX_ADC0_ADINC2;
+	adc0 = MC13XXX_ADC0_ADINC1 | MC13XXX_ADC0_ADINC2 |
+	       MC13XXX_ADC0_CHRGRAWDIV;
 	adc1 = MC13XXX_ADC1_ADEN | MC13XXX_ADC1_ADTRIGIGN | MC13XXX_ADC1_ASC;
 
-	if (channel > 7)
+	/*
+	 * Channels mapped through ADIN7:
+	 * 7  - General purpose ADIN7
+	 * 16 - UID
+	 * 17 - Die temperature
+	 */
+	if (channel > 7 && channel < 16) {
 		adc1 |= MC13XXX_ADC1_ADSEL;
+	} else if (channel == 16) {
+		adc0 |= MC13XXX_ADC0_ADIN7SEL_UID;
+		channel = 7;
+	} else if (channel == 17) {
+		adc0 |= MC13XXX_ADC0_ADIN7SEL_DIE;
+		channel = 7;
+	}
 
 	switch (mode) {
 	case MC13XXX_ADC_MODE_TS:
@@ -383,16 +397,16 @@ static int mc13xxx_probe_flags_dt(struct mc13xxx *mc13xxx)
 	if (!np)
 		return -ENODEV;
 
-	if (of_get_property(np, "fsl,mc13xxx-uses-adc", NULL))
+	if (of_property_read_bool(np, "fsl,mc13xxx-uses-adc"))
 		mc13xxx->flags |= MC13XXX_USE_ADC;
 
-	if (of_get_property(np, "fsl,mc13xxx-uses-codec", NULL))
+	if (of_property_read_bool(np, "fsl,mc13xxx-uses-codec"))
 		mc13xxx->flags |= MC13XXX_USE_CODEC;
 
-	if (of_get_property(np, "fsl,mc13xxx-uses-rtc", NULL))
+	if (of_property_read_bool(np, "fsl,mc13xxx-uses-rtc"))
 		mc13xxx->flags |= MC13XXX_USE_RTC;
 
-	if (of_get_property(np, "fsl,mc13xxx-uses-touch", NULL))
+	if (of_property_read_bool(np, "fsl,mc13xxx-uses-touch"))
 		mc13xxx->flags |= MC13XXX_USE_TOUCHSCREEN;
 
 	return 0;

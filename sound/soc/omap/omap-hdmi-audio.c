@@ -26,9 +26,9 @@
 #include <sound/dmaengine_pcm.h>
 #include <uapi/sound/asound.h>
 #include <sound/asoundef.h>
-#include <sound/omap-pcm.h>
 #include <sound/omap-hdmi-audio.h>
-#include <video/omapdss.h>
+
+#include "sdma-pcm.h"
 
 #define DRV_NAME "omap-hdmi-audio"
 
@@ -81,7 +81,15 @@ static int hdmi_dai_startup(struct snd_pcm_substream *substream,
 	ret = snd_pcm_hw_constraint_step(substream->runtime, 0,
 					 SNDRV_PCM_HW_PARAM_PERIOD_BYTES, 128);
 	if (ret < 0) {
-		dev_err(dai->dev, "could not apply constraint\n");
+		dev_err(dai->dev, "Could not apply period constraint: %d\n",
+			ret);
+		return ret;
+	}
+	ret = snd_pcm_hw_constraint_step(substream->runtime, 0,
+					 SNDRV_PCM_HW_PARAM_BUFFER_BYTES, 128);
+	if (ret < 0) {
+		dev_err(dai->dev, "Could not apply buffer constraint: %d\n",
+			ret);
 		return ret;
 	}
 
@@ -210,16 +218,18 @@ static int hdmi_dai_hw_params(struct snd_pcm_substream *substream,
 
 	cea->db3 = 0; /* not used, all zeros */
 
-	/*
-	 * The OMAP HDMI IP requires to use the 8-channel channel code when
-	 * transmitting more than two channels.
-	 */
 	if (params_channels(params) == 2)
 		cea->db4_ca = 0x0;
+	else if (params_channels(params) == 6)
+		cea->db4_ca = 0xb;
 	else
 		cea->db4_ca = 0x13;
 
-	cea->db5_dminh_lsv = CEA861_AUDIO_INFOFRAME_DB5_DM_INH_PROHIBITED;
+	if (cea->db4_ca == 0x00)
+		cea->db5_dminh_lsv = CEA861_AUDIO_INFOFRAME_DB5_DM_INH_PERMITTED;
+	else
+		cea->db5_dminh_lsv = CEA861_AUDIO_INFOFRAME_DB5_DM_INH_PROHIBITED;
+
 	/* the expression is trivial but makes clear what we are doing */
 	cea->db5_dminh_lsv |= (0 & CEA861_AUDIO_INFOFRAME_DB5_LSV);
 
@@ -328,24 +338,22 @@ static int omap_hdmi_audio_probe(struct platform_device *pdev)
 	ad->dma_data.addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 	mutex_init(&ad->current_stream_lock);
 
-	switch (ha->dss_version) {
-	case OMAPDSS_VER_OMAP4430_ES1:
-	case OMAPDSS_VER_OMAP4430_ES2:
-	case OMAPDSS_VER_OMAP4:
+	switch (ha->version) {
+	case 4:
 		dai_drv = &omap4_hdmi_dai;
 		break;
-	case OMAPDSS_VER_OMAP5:
+	case 5:
 		dai_drv = &omap5_hdmi_dai;
 		break;
 	default:
 		return -EINVAL;
 	}
-	ret = snd_soc_register_component(ad->dssdev, &omap_hdmi_component,
+	ret = devm_snd_soc_register_component(ad->dssdev, &omap_hdmi_component,
 					 dai_drv, 1);
 	if (ret)
 		return ret;
 
-	ret = omap_pcm_platform_register(ad->dssdev);
+	ret = sdma_pcm_platform_register(ad->dssdev, "audio_tx", NULL);
 	if (ret)
 		return ret;
 
@@ -355,9 +363,14 @@ static int omap_hdmi_audio_probe(struct platform_device *pdev)
 
 	card->name = devm_kasprintf(dev, GFP_KERNEL,
 				    "HDMI %s", dev_name(ad->dssdev));
+	if (!card->name)
+		return -ENOMEM;
+
 	card->owner = THIS_MODULE;
 	card->dai_link =
 		devm_kzalloc(dev, sizeof(*(card->dai_link)), GFP_KERNEL);
+	if (!card->dai_link)
+		return -ENOMEM;
 	card->dai_link->name = card->name;
 	card->dai_link->stream_name = card->name;
 	card->dai_link->cpu_dai_name = dev_name(ad->dssdev);
@@ -370,7 +383,6 @@ static int omap_hdmi_audio_probe(struct platform_device *pdev)
 	ret = snd_soc_register_card(card);
 	if (ret) {
 		dev_err(dev, "snd_soc_register_card failed (%d)\n", ret);
-		snd_soc_unregister_component(ad->dssdev);
 		return ret;
 	}
 
@@ -387,7 +399,6 @@ static int omap_hdmi_audio_remove(struct platform_device *pdev)
 	struct hdmi_audio_data *ad = platform_get_drvdata(pdev);
 
 	snd_soc_unregister_card(ad->card);
-	snd_soc_unregister_component(ad->dssdev);
 	return 0;
 }
 

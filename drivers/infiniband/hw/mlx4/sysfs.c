@@ -221,11 +221,12 @@ void del_sysfs_port_mcg_attr(struct mlx4_ib_dev *device, int port_num,
 static int add_port_entries(struct mlx4_ib_dev *device, int port_num)
 {
 	int i;
-	char buff[10];
+	char buff[11];
 	struct mlx4_ib_iov_port *port = NULL;
 	int ret = 0 ;
 	struct ib_port_attr attr;
 
+	memset(&attr, 0, sizeof(attr));
 	/* get the physical gid and pkey table sizes.*/
 	ret = __mlx4_ib_query_port(&device->ib_dev, port_num, &attr, 1);
 	if (ret)
@@ -640,6 +641,8 @@ static int add_port(struct mlx4_ib_dev *dev, int port_num, int slave)
 	struct mlx4_port *p;
 	int i;
 	int ret;
+	int is_eth = rdma_port_get_link_layer(&dev->ib_dev, port_num) ==
+			IB_LINK_LAYER_ETHERNET;
 
 	p = kzalloc(sizeof *p, GFP_KERNEL);
 	if (!p)
@@ -657,7 +660,8 @@ static int add_port(struct mlx4_ib_dev *dev, int port_num, int slave)
 
 	p->pkey_group.name  = "pkey_idx";
 	p->pkey_group.attrs =
-		alloc_group_attrs(show_port_pkey, store_port_pkey,
+		alloc_group_attrs(show_port_pkey,
+				  is_eth ? NULL : store_port_pkey,
 				  dev->dev->caps.pkey_table_len[port_num]);
 	if (!p->pkey_group.attrs) {
 		ret = -ENOMEM;
@@ -814,9 +818,7 @@ int mlx4_ib_device_register_sysfs(struct mlx4_ib_dev *dev)
 	if (!mlx4_is_master(dev->dev))
 		return 0;
 
-	dev->iov_parent =
-		kobject_create_and_add("iov",
-				       kobject_get(dev->ib_dev.ports_parent->parent));
+	dev->iov_parent = kobject_create_and_add("iov", &dev->ib_dev.dev.kobj);
 	if (!dev->iov_parent) {
 		ret = -ENOMEM;
 		goto err;
@@ -846,7 +848,6 @@ err_add_entries:
 err_ports:
 	kobject_put(dev->iov_parent);
 err:
-	kobject_put(dev->ib_dev.ports_parent->parent);
 	pr_err("mlx4_ib_device_register_sysfs error (%d)\n", ret);
 	return ret;
 }
@@ -882,5 +883,4 @@ void mlx4_ib_device_unregister_sysfs(struct mlx4_ib_dev *device)
 	kobject_put(device->ports_parent);
 	kobject_put(device->iov_parent);
 	kobject_put(device->iov_parent);
-	kobject_put(device->ib_dev.ports_parent->parent);
 }

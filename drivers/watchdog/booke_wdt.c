@@ -25,7 +25,7 @@
 /* If the kernel parameter wdt=1, the watchdog will be enabled at boot.
  * Also, the wdt_period sets the watchdog timer period timeout.
  * For E500 cpus the wdt_period sets which bit changing from 0->1 will
- * trigger a watchog timeout. This watchdog timeout will occur 3 times, the
+ * trigger a watchdog timeout. This watchdog timeout will occur 3 times, the
  * first time nothing will happen, the second time a watchdog exception will
  * occur, and the final time the board will reset.
  */
@@ -186,20 +186,18 @@ static int booke_wdt_stop(struct watchdog_device *wdog)
 static int booke_wdt_set_timeout(struct watchdog_device *wdt_dev,
 				 unsigned int timeout)
 {
-	if (timeout > MAX_WDT_TIMEOUT)
-		return -EINVAL;
 	wdt_dev->timeout = timeout;
 	booke_wdt_set(wdt_dev);
 
 	return 0;
 }
 
-static struct watchdog_info booke_wdt_info = {
+static struct watchdog_info booke_wdt_info __ro_after_init = {
 	.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING,
 	.identity = "PowerPC Book-E Watchdog",
 };
 
-static struct watchdog_ops booke_wdt_ops = {
+static const struct watchdog_ops booke_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = booke_wdt_start,
 	.stop = booke_wdt_stop,
@@ -211,7 +209,6 @@ static struct watchdog_device booke_wdt_dev = {
 	.info = &booke_wdt_info,
 	.ops = &booke_wdt_ops,
 	.min_timeout = 1,
-	.max_timeout = 0xFFFF
 };
 
 static void __exit booke_wdt_exit(void)
@@ -229,6 +226,7 @@ static int __init booke_wdt_init(void)
 	booke_wdt_set_timeout(&booke_wdt_dev,
 			      period_to_sec(booke_wdt_period));
 	watchdog_set_nowayout(&booke_wdt_dev, nowayout);
+	booke_wdt_dev.max_timeout = MAX_WDT_TIMEOUT;
 	if (booke_wdt_enabled)
 		booke_wdt_start(&booke_wdt_dev);
 

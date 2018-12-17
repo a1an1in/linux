@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* uio_fsl_elbc_gpcm: UIO driver for eLBC/GPCM peripherals
 
    Copyright (C) 2014 Linutronix GmbH
@@ -381,8 +382,7 @@ static int uio_fsl_elbc_gpcm_probe(struct platform_device *pdev)
 	}
 
 	/* set all UIO data */
-	if (node->name)
-		info->mem[0].name = kstrdup(node->name, GFP_KERNEL);
+	info->mem[0].name = kasprintf(GFP_KERNEL, "%pOFn", node);
 	info->mem[0].addr = res.start;
 	info->mem[0].size = resource_size(&res);
 	info->mem[0].memtype = UIO_MEM_PHYS;
@@ -470,29 +470,17 @@ static const struct of_device_id uio_fsl_elbc_gpcm_match[] = {
 	{ .compatible = "fsl,elbc-gpcm-uio", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, uio_fsl_elbc_gpcm_match);
 
 static struct platform_driver uio_fsl_elbc_gpcm_driver = {
 	.driver = {
 		.name = "fsl,elbc-gpcm-uio",
-		.owner = THIS_MODULE,
 		.of_match_table = uio_fsl_elbc_gpcm_match,
 	},
 	.probe = uio_fsl_elbc_gpcm_probe,
 	.remove = uio_fsl_elbc_gpcm_remove,
 };
-
-static int __init uio_fsl_elbc_gpcm_init(void)
-{
-	return platform_driver_register(&uio_fsl_elbc_gpcm_driver);
-}
-
-static void __exit uio_fsl_elbc_gpcm_exit(void)
-{
-	platform_driver_unregister(&uio_fsl_elbc_gpcm_driver);
-}
-
-module_init(uio_fsl_elbc_gpcm_init);
-module_exit(uio_fsl_elbc_gpcm_exit);
+module_platform_driver(uio_fsl_elbc_gpcm_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("John Ogness <john.ogness@linutronix.de>");
