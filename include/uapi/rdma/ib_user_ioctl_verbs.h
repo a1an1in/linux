@@ -35,6 +35,7 @@
 #define IB_USER_IOCTL_VERBS_H
 
 #include <linux/types.h>
+#include <rdma/ib_user_verbs.h>
 
 #ifndef RDMA_UAPI_PTR
 #define RDMA_UAPI_PTR(_type, _name)	__aligned_u64 _name
@@ -155,6 +156,43 @@ struct ib_uverbs_flow_action_esp {
 enum ib_uverbs_read_counters_flags {
 	/* prefer read values from driver cache */
 	IB_UVERBS_READ_COUNTERS_PREFER_CACHED = 1 << 0,
+};
+
+enum ib_uverbs_advise_mr_advice {
+	IB_UVERBS_ADVISE_MR_ADVICE_PREFETCH,
+	IB_UVERBS_ADVISE_MR_ADVICE_PREFETCH_WRITE,
+};
+
+enum ib_uverbs_advise_mr_flag {
+	IB_UVERBS_ADVISE_MR_FLAG_FLUSH = 1 << 0,
+};
+
+struct ib_uverbs_query_port_resp_ex {
+	struct ib_uverbs_query_port_resp legacy_resp;
+	__u16 port_cap_flags2;
+	__u8  reserved[6];
+};
+
+enum rdma_driver_id {
+	RDMA_DRIVER_UNKNOWN,
+	RDMA_DRIVER_MLX5,
+	RDMA_DRIVER_MLX4,
+	RDMA_DRIVER_CXGB3,
+	RDMA_DRIVER_CXGB4,
+	RDMA_DRIVER_MTHCA,
+	RDMA_DRIVER_BNXT_RE,
+	RDMA_DRIVER_OCRDMA,
+	RDMA_DRIVER_NES,
+	RDMA_DRIVER_I40IW,
+	RDMA_DRIVER_VMW_PVRDMA,
+	RDMA_DRIVER_QEDR,
+	RDMA_DRIVER_HNS,
+	RDMA_DRIVER_USNIC,
+	RDMA_DRIVER_RXE,
+	RDMA_DRIVER_HFI1,
+	RDMA_DRIVER_QIB,
+	RDMA_DRIVER_EFA,
+	RDMA_DRIVER_SIW,
 };
 
 #endif

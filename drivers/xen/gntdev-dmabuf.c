@@ -80,6 +80,12 @@ struct gntdev_dmabuf_priv {
 	struct list_head imp_list;
 	/* This is the lock which protects dma_buf_xxx lists. */
 	struct mutex lock;
+	/*
+	 * We reference this file while exporting dma-bufs, so
+	 * the grant device context is not destroyed while there are
+	 * external users alive.
+	 */
+	struct file *filp;
 };
 
 /* DMA buffer export support. */
@@ -311,6 +317,7 @@ static void dmabuf_exp_release(struct kref *kref)
 
 	dmabuf_exp_wait_obj_signal(gntdev_dmabuf->priv, gntdev_dmabuf);
 	list_del(&gntdev_dmabuf->next);
+	fput(gntdev_dmabuf->priv->filp);
 	kfree(gntdev_dmabuf);
 }
 
@@ -423,6 +430,7 @@ static int dmabuf_exp_from_pages(struct gntdev_dmabuf_export_args *args)
 	mutex_lock(&args->dmabuf_priv->lock);
 	list_add(&gntdev_dmabuf->next, &args->dmabuf_priv->exp_list);
 	mutex_unlock(&args->dmabuf_priv->lock);
+	get_file(gntdev_dmabuf->priv->filp);
 	return 0;
 
 fail:
@@ -438,7 +446,7 @@ dmabuf_exp_alloc_backing_storage(struct gntdev_priv *priv, int dmabuf_flags,
 {
 	struct gntdev_grant_map *map;
 
-	if (unlikely(count <= 0))
+	if (unlikely(gntdev_test_page_count(count)))
 		return ERR_PTR(-EINVAL);
 
 	if ((dmabuf_flags & GNTDEV_DMA_FLAG_WC) &&
@@ -451,11 +459,6 @@ dmabuf_exp_alloc_backing_storage(struct gntdev_priv *priv, int dmabuf_flags,
 	if (!map)
 		return ERR_PTR(-ENOMEM);
 
-	if (unlikely(gntdev_account_mapped_pages(count))) {
-		pr_debug("can't map %d pages: over limit\n", count);
-		gntdev_put_map(NULL, map);
-		return ERR_PTR(-ENOMEM);
-	}
 	return map;
 }
 
@@ -737,6 +740,14 @@ static int dmabuf_imp_release(struct gntdev_dmabuf_priv *priv, u32 fd)
 	return 0;
 }
 
+static void dmabuf_imp_release_all(struct gntdev_dmabuf_priv *priv)
+{
+	struct gntdev_dmabuf *q, *gntdev_dmabuf;
+
+	list_for_each_entry_safe(gntdev_dmabuf, q, &priv->imp_list, next)
+		dmabuf_imp_release(priv, gntdev_dmabuf->fd);
+}
+
 /* DMA buffer IOCTL support. */
 
 long gntdev_ioctl_dmabuf_exp_from_refs(struct gntdev_priv *priv, int use_ptemod,
@@ -755,7 +766,7 @@ long gntdev_ioctl_dmabuf_exp_from_refs(struct gntdev_priv *priv, int use_ptemod,
 	if (copy_from_user(&op, u, sizeof(op)) != 0)
 		return -EFAULT;
 
-	if (unlikely(op.count <= 0))
+	if (unlikely(gntdev_test_page_count(op.count)))
 		return -EINVAL;
 
 	refs = kcalloc(op.count, sizeof(*refs), GFP_KERNEL);
@@ -802,7 +813,7 @@ long gntdev_ioctl_dmabuf_imp_to_refs(struct gntdev_priv *priv,
 	if (copy_from_user(&op, u, sizeof(op)) != 0)
 		return -EFAULT;
 
-	if (unlikely(op.count <= 0))
+	if (unlikely(gntdev_test_page_count(op.count)))
 		return -EINVAL;
 
 	gntdev_dmabuf = dmabuf_imp_to_refs(priv->dmabuf_priv,
@@ -834,7 +845,7 @@ long gntdev_ioctl_dmabuf_imp_release(struct gntdev_priv *priv,
 	return dmabuf_imp_release(priv->dmabuf_priv, op.fd);
 }
 
-struct gntdev_dmabuf_priv *gntdev_dmabuf_init(void)
+struct gntdev_dmabuf_priv *gntdev_dmabuf_init(struct file *filp)
 {
 	struct gntdev_dmabuf_priv *priv;
 
@@ -847,10 +858,13 @@ struct gntdev_dmabuf_priv *gntdev_dmabuf_init(void)
 	INIT_LIST_HEAD(&priv->exp_wait_list);
 	INIT_LIST_HEAD(&priv->imp_list);
 
+	priv->filp = filp;
+
 	return priv;
 }
 
 void gntdev_dmabuf_fini(struct gntdev_dmabuf_priv *priv)
 {
+	dmabuf_imp_release_all(priv);
 	kfree(priv);
 }

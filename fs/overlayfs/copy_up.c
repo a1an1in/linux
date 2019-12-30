@@ -1,10 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *
  * Copyright (C) 2011 Novell Inc.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms of the GNU General Public License version 2 as published by
- * the Free Software Foundation.
  */
 
 #include <linux/module.h>
@@ -37,7 +34,7 @@ static int ovl_ccup_get(char *buf, const struct kernel_param *param)
 }
 
 module_param_call(check_copy_up, ovl_ccup_set, ovl_ccup_get, NULL, 0644);
-MODULE_PARM_DESC(ovl_check_copy_up, "Obsolete; does nothing");
+MODULE_PARM_DESC(check_copy_up, "Obsolete; does nothing");
 
 int ovl_copy_xattr(struct dentry *old, struct dentry *new)
 {
@@ -230,13 +227,17 @@ int ovl_set_attr(struct dentry *upperdentry, struct kstat *stat)
 struct ovl_fh *ovl_encode_real_fh(struct dentry *real, bool is_upper)
 {
 	struct ovl_fh *fh;
-	int fh_type, fh_len, dwords;
-	void *buf;
+	int fh_type, dwords;
 	int buflen = MAX_HANDLE_SZ;
 	uuid_t *uuid = &real->d_sb->s_uuid;
+	int err;
 
-	buf = kmalloc(buflen, GFP_KERNEL);
-	if (!buf)
+	/* Make sure the real fid stays 32bit aligned */
+	BUILD_BUG_ON(OVL_FH_FID_OFFSET % 4);
+	BUILD_BUG_ON(MAX_HANDLE_SZ + OVL_FH_FID_OFFSET > 255);
+
+	fh = kzalloc(buflen + OVL_FH_FID_OFFSET, GFP_KERNEL);
+	if (!fh)
 		return ERR_PTR(-ENOMEM);
 
 	/*
@@ -245,27 +246,19 @@ struct ovl_fh *ovl_encode_real_fh(struct dentry *real, bool is_upper)
 	 * the price or reconnecting the dentry.
 	 */
 	dwords = buflen >> 2;
-	fh_type = exportfs_encode_fh(real, buf, &dwords, 0);
+	fh_type = exportfs_encode_fh(real, (void *)fh->fb.fid, &dwords, 0);
 	buflen = (dwords << 2);
 
-	fh = ERR_PTR(-EIO);
+	err = -EIO;
 	if (WARN_ON(fh_type < 0) ||
 	    WARN_ON(buflen > MAX_HANDLE_SZ) ||
 	    WARN_ON(fh_type == FILEID_INVALID))
-		goto out;
+		goto out_err;
 
-	BUILD_BUG_ON(MAX_HANDLE_SZ + offsetof(struct ovl_fh, fid) > 255);
-	fh_len = offsetof(struct ovl_fh, fid) + buflen;
-	fh = kmalloc(fh_len, GFP_KERNEL);
-	if (!fh) {
-		fh = ERR_PTR(-ENOMEM);
-		goto out;
-	}
-
-	fh->version = OVL_FH_VERSION;
-	fh->magic = OVL_FH_MAGIC;
-	fh->type = fh_type;
-	fh->flags = OVL_FH_FLAG_CPU_ENDIAN;
+	fh->fb.version = OVL_FH_VERSION;
+	fh->fb.magic = OVL_FH_MAGIC;
+	fh->fb.type = fh_type;
+	fh->fb.flags = OVL_FH_FLAG_CPU_ENDIAN;
 	/*
 	 * When we will want to decode an overlay dentry from this handle
 	 * and all layers are on the same fs, if we get a disconncted real
@@ -273,14 +266,15 @@ struct ovl_fh *ovl_encode_real_fh(struct dentry *real, bool is_upper)
 	 * it to upperdentry or to lowerstack is by checking this flag.
 	 */
 	if (is_upper)
-		fh->flags |= OVL_FH_FLAG_PATH_UPPER;
-	fh->len = fh_len;
-	fh->uuid = *uuid;
-	memcpy(fh->fid, buf, buflen);
+		fh->fb.flags |= OVL_FH_FLAG_PATH_UPPER;
+	fh->fb.len = sizeof(fh->fb) + buflen;
+	fh->fb.uuid = *uuid;
 
-out:
-	kfree(buf);
 	return fh;
+
+out_err:
+	kfree(fh);
+	return ERR_PTR(err);
 }
 
 int ovl_set_origin(struct dentry *dentry, struct dentry *lower,
@@ -303,8 +297,8 @@ int ovl_set_origin(struct dentry *dentry, struct dentry *lower,
 	/*
 	 * Do not fail when upper doesn't support xattrs.
 	 */
-	err = ovl_check_setxattr(dentry, upper, OVL_XATTR_ORIGIN, fh,
-				 fh ? fh->len : 0, 0);
+	err = ovl_check_setxattr(dentry, upper, OVL_XATTR_ORIGIN, fh->buf,
+				 fh ? fh->fb.len : 0, 0);
 	kfree(fh);
 
 	return err;
@@ -320,7 +314,7 @@ static int ovl_set_upper_fh(struct dentry *upper, struct dentry *index)
 	if (IS_ERR(fh))
 		return PTR_ERR(fh);
 
-	err = ovl_do_setxattr(index, OVL_XATTR_UPPER, fh, fh->len, 0);
+	err = ovl_do_setxattr(index, OVL_XATTR_UPPER, fh->buf, fh->fb.len, 0);
 
 	kfree(fh);
 	return err;
@@ -443,6 +437,24 @@ static int ovl_copy_up_inode(struct ovl_copy_up_ctx *c, struct dentry *temp)
 {
 	int err;
 
+	/*
+	 * Copy up data first and then xattrs. Writing data after
+	 * xattrs will remove security.capability xattr automatically.
+	 */
+	if (S_ISREG(c->stat.mode) && !c->metacopy) {
+		struct path upperpath, datapath;
+
+		ovl_path_upper(c->dentry, &upperpath);
+		if (WARN_ON(upperpath.dentry != NULL))
+			return -EIO;
+		upperpath.dentry = temp;
+
+		ovl_path_lowerdata(c->dentry, &datapath);
+		err = ovl_copy_up_data(&datapath, &upperpath, c->stat.size);
+		if (err)
+			return err;
+	}
+
 	err = ovl_copy_xattr(c->lowerpath.dentry, temp);
 	if (err)
 		return err;
@@ -456,19 +468,6 @@ static int ovl_copy_up_inode(struct ovl_copy_up_ctx *c, struct dentry *temp)
 	 */
 	if (c->origin) {
 		err = ovl_set_origin(c->dentry, c->lowerpath.dentry, temp);
-		if (err)
-			return err;
-	}
-
-	if (S_ISREG(c->stat.mode) && !c->metacopy) {
-		struct path upperpath, datapath;
-
-		ovl_path_upper(c->dentry, &upperpath);
-		BUG_ON(upperpath.dentry != NULL);
-		upperpath.dentry = temp;
-
-		ovl_path_lowerdata(c->dentry, &datapath);
-		err = ovl_copy_up_data(&datapath, &upperpath, c->stat.size);
 		if (err)
 			return err;
 	}
@@ -737,6 +736,8 @@ static int ovl_copy_up_meta_inode_data(struct ovl_copy_up_ctx *c)
 {
 	struct path upperpath, datapath;
 	int err;
+	char *capability = NULL;
+	ssize_t uninitialized_var(cap_size);
 
 	ovl_path_upper(c->dentry, &upperpath);
 	if (WARN_ON(upperpath.dentry == NULL))
@@ -746,15 +747,37 @@ static int ovl_copy_up_meta_inode_data(struct ovl_copy_up_ctx *c)
 	if (WARN_ON(datapath.dentry == NULL))
 		return -EIO;
 
+	if (c->stat.size) {
+		err = cap_size = ovl_getxattr(upperpath.dentry, XATTR_NAME_CAPS,
+					      &capability, 0);
+		if (err < 0 && err != -ENODATA)
+			goto out;
+	}
+
 	err = ovl_copy_up_data(&datapath, &upperpath, c->stat.size);
 	if (err)
-		return err;
+		goto out_free;
+
+	/*
+	 * Writing to upper file will clear security.capability xattr. We
+	 * don't want that to happen for normal copy-up operation.
+	 */
+	if (capability) {
+		err = ovl_do_setxattr(upperpath.dentry, XATTR_NAME_CAPS,
+				      capability, cap_size, 0);
+		if (err)
+			goto out_free;
+	}
+
 
 	err = vfs_removexattr(upperpath.dentry, OVL_XATTR_METACOPY);
 	if (err)
-		return err;
+		goto out_free;
 
 	ovl_set_upperdata(d_inode(c->dentry));
+out_free:
+	kfree(capability);
+out:
 	return err;
 }
 
@@ -880,14 +903,14 @@ static bool ovl_open_need_copy_up(struct dentry *dentry, int flags)
 	return true;
 }
 
-int ovl_open_maybe_copy_up(struct dentry *dentry, unsigned int file_flags)
+int ovl_maybe_copy_up(struct dentry *dentry, int flags)
 {
 	int err = 0;
 
-	if (ovl_open_need_copy_up(dentry, file_flags)) {
+	if (ovl_open_need_copy_up(dentry, flags)) {
 		err = ovl_want_write(dentry);
 		if (!err) {
-			err = ovl_copy_up_flags(dentry, file_flags);
+			err = ovl_copy_up_flags(dentry, flags);
 			ovl_drop_write(dentry);
 		}
 	}

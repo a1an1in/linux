@@ -582,6 +582,7 @@ struct cache_set {
 	 */
 	wait_queue_head_t	btree_cache_wait;
 	struct task_struct	*btree_cache_alloc_lock;
+	spinlock_t		btree_cannibalize_lock;
 
 	/*
 	 * When we free a btree node, we increment the gen of the bucket the
@@ -627,6 +628,20 @@ struct cache_set {
 	struct bkey		gc_done;
 
 	/*
+	 * For automatical garbage collection after writeback completed, this
+	 * varialbe is used as bit fields,
+	 * - 0000 0001b (BCH_ENABLE_AUTO_GC): enable gc after writeback
+	 * - 0000 0010b (BCH_DO_AUTO_GC):     do gc after writeback
+	 * This is an optimization for following write request after writeback
+	 * finished, but read hit rate dropped due to clean data on cache is
+	 * discarded. Unless user explicitly sets it via sysfs, it won't be
+	 * enabled.
+	 */
+#define BCH_ENABLE_AUTO_GC	1
+#define BCH_DO_AUTO_GC		2
+	uint8_t			gc_after_writeback;
+
+	/*
 	 * The allocation code needs gc_mark in struct bucket to be correct, but
 	 * it's not while a gc is in progress. Protected by bucket_lock.
 	 */
@@ -658,7 +673,11 @@ struct cache_set {
 
 	/*
 	 * A btree node on disk could have too many bsets for an iterator to fit
-	 * on the stack - have to dynamically allocate them
+	 * on the stack - have to dynamically allocate them.
+	 * bch_cache_set_alloc() will make sure the pool can allocate iterators
+	 * equipped with enough room that can host
+	 *     (sb.bucket_size / sb.block_size)
+	 * btree_iter_sets, which is more than static MAX_BSETS.
 	 */
 	mempool_t		fill_iter;
 
@@ -687,8 +706,8 @@ struct cache_set {
 	atomic_long_t		writeback_keys_failed;
 
 	atomic_long_t		reclaim;
+	atomic_long_t		reclaimed_journal_buckets;
 	atomic_long_t		flush_write;
-	atomic_long_t		retry_flush_write;
 
 	enum			{
 		ON_ERROR_UNREGISTER,
@@ -705,11 +724,10 @@ struct cache_set {
 	unsigned int		gc_always_rewrite:1;
 	unsigned int		shrinker_disabled:1;
 	unsigned int		copy_gc_enabled:1;
+	unsigned int		idle_max_writeback_rate_enabled:1;
 
 #define BUCKET_HASH_BITS	12
 	struct hlist_head	bucket_hash[1 << BUCKET_HASH_BITS];
-
-	DECLARE_HEAP(struct btree *, flush_btree);
 };
 
 struct bbio {
@@ -961,7 +979,7 @@ bool bch_cached_dev_error(struct cached_dev *dc);
 __printf(2, 3)
 bool bch_cache_set_error(struct cache_set *c, const char *fmt, ...);
 
-void bch_prio_write(struct cache *ca);
+int bch_prio_write(struct cache *ca, bool wait);
 void bch_write_bdev_super(struct cached_dev *dc, struct closure *parent);
 
 extern struct workqueue_struct *bcache_wq;
@@ -988,7 +1006,7 @@ int bch_flash_dev_create(struct cache_set *c, uint64_t size);
 int bch_cached_dev_attach(struct cached_dev *dc, struct cache_set *c,
 			  uint8_t *set_uuid);
 void bch_cached_dev_detach(struct cached_dev *dc);
-void bch_cached_dev_run(struct cached_dev *dc);
+int bch_cached_dev_run(struct cached_dev *dc);
 void bcache_device_stop(struct bcache_device *d);
 
 void bch_cache_set_unregister(struct cache_set *c);

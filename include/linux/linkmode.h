@@ -57,6 +57,15 @@ static inline void linkmode_clear_bit(int nr, volatile unsigned long *addr)
 	__clear_bit(nr, addr);
 }
 
+static inline void linkmode_mod_bit(int nr, volatile unsigned long *addr,
+				    int set)
+{
+	if (set)
+		linkmode_set_bit(nr, addr);
+	else
+		linkmode_clear_bit(nr, addr);
+}
+
 static inline void linkmode_change_bit(int nr, volatile unsigned long *addr)
 {
 	__change_bit(nr, addr);
@@ -71,6 +80,12 @@ static inline int linkmode_equal(const unsigned long *src1,
 				 const unsigned long *src2)
 {
 	return bitmap_equal(src1, src2, __ETHTOOL_LINK_MODE_MASK_NBITS);
+}
+
+static inline int linkmode_subset(const unsigned long *src1,
+				  const unsigned long *src2)
+{
+	return bitmap_subset(src1, src2, __ETHTOOL_LINK_MODE_MASK_NBITS);
 }
 
 #endif /* __LINKMODE_H */

@@ -1,10 +1,7 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * aQuantia Corporation Network Driver
- * Copyright (C) 2014-2017 aQuantia Corporation. All rights reserved
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
+ * Copyright (C) 2014-2019 aQuantia Corporation. All rights reserved
  */
 
 /* File aq_hw.h: Declaration of abstract interface for NIC hardware specific
@@ -17,6 +14,20 @@
 #include "aq_common.h"
 #include "aq_rss.h"
 #include "hw_atl/hw_atl_utils.h"
+
+#define AQ_HW_MAC_COUNTER_HZ   312500000ll
+#define AQ_HW_PHY_COUNTER_HZ   160000000ll
+
+#define AQ_RX_FIRST_LOC_FVLANID     0U
+#define AQ_RX_LAST_LOC_FVLANID	   15U
+#define AQ_RX_FIRST_LOC_FETHERT    16U
+#define AQ_RX_LAST_LOC_FETHERT	   31U
+#define AQ_RX_FIRST_LOC_FL3L4	   32U
+#define AQ_RX_LAST_LOC_FL3L4	   39U
+#define AQ_RX_MAX_RXNFC_LOC	   AQ_RX_LAST_LOC_FL3L4
+#define AQ_VLAN_MAX_FILTERS   \
+			(AQ_RX_LAST_LOC_FVLANID - AQ_RX_FIRST_LOC_FVLANID + 1U)
+#define AQ_RX_QUEUE_NOT_ASSIGNED   0xFFU
 
 /* NIC H/W capabilities */
 struct aq_hw_caps_s {
@@ -77,6 +88,8 @@ struct aq_stats_s {
 #define AQ_HW_IRQ_MSI     2U
 #define AQ_HW_IRQ_MSIX    3U
 
+#define AQ_HW_SERVICE_IRQS   1U
+
 #define AQ_HW_POWER_STATE_D0   0U
 #define AQ_HW_POWER_STATE_D3   3U
 
@@ -84,6 +97,7 @@ struct aq_stats_s {
 #define AQ_HW_FLAG_STOPPING    0x00000008U
 #define AQ_HW_FLAG_RESETTING   0x00000010U
 #define AQ_HW_FLAG_CLOSING     0x00000020U
+#define AQ_HW_PTP_AVAILABLE    0x01000000U
 #define AQ_HW_LINK_DOWN        0x04000000U
 #define AQ_HW_FLAG_ERR_UNPLUG  0x40000000U
 #define AQ_HW_FLAG_ERR_HW      0x80000000U
@@ -105,6 +119,23 @@ struct aq_stats_s {
 
 #define AQ_HW_MULTICAST_ADDRESS_MAX     32U
 
+#define AQ_HW_LED_BLINK    0x2U
+#define AQ_HW_LED_DEFAULT  0x0U
+
+enum aq_priv_flags {
+	AQ_HW_LOOPBACK_DMA_SYS,
+	AQ_HW_LOOPBACK_PKT_SYS,
+	AQ_HW_LOOPBACK_DMA_NET,
+	AQ_HW_LOOPBACK_PHYINT_SYS,
+	AQ_HW_LOOPBACK_PHYEXT_SYS,
+};
+
+#define AQ_HW_LOOPBACK_MASK	(BIT(AQ_HW_LOOPBACK_DMA_SYS) |\
+				 BIT(AQ_HW_LOOPBACK_PKT_SYS) |\
+				 BIT(AQ_HW_LOOPBACK_DMA_NET) |\
+				 BIT(AQ_HW_LOOPBACK_PHYINT_SYS) |\
+				 BIT(AQ_HW_LOOPBACK_PHYEXT_SYS))
+
 struct aq_hw_s {
 	atomic_t flags;
 	u8 rbl_enabled:1;
@@ -123,13 +154,17 @@ struct aq_hw_s {
 	atomic_t dpc;
 	u32 mbox_addr;
 	u32 rpc_addr;
+	u32 settings_addr;
 	u32 rpc_tid;
 	struct hw_atl_utils_fw_rpc rpc;
+	s64 ptp_clk_offset;
+	u16 phy_id;
 };
 
 struct aq_ring_s;
 struct aq_ring_param_s;
 struct sk_buff;
+struct aq_rx_filter_l3l4;
 
 struct aq_hw_ops {
 
@@ -183,6 +218,23 @@ struct aq_hw_ops {
 	int (*hw_packet_filter_set)(struct aq_hw_s *self,
 				    unsigned int packet_filter);
 
+	int (*hw_filter_l3l4_set)(struct aq_hw_s *self,
+				  struct aq_rx_filter_l3l4 *data);
+
+	int (*hw_filter_l3l4_clear)(struct aq_hw_s *self,
+				    struct aq_rx_filter_l3l4 *data);
+
+	int (*hw_filter_l2_set)(struct aq_hw_s *self,
+				struct aq_rx_filter_l2 *data);
+
+	int (*hw_filter_l2_clear)(struct aq_hw_s *self,
+				  struct aq_rx_filter_l2 *data);
+
+	int (*hw_filter_vlan_set)(struct aq_hw_s *self,
+				  struct aq_rx_filter_vlan *aq_vlans);
+
+	int (*hw_filter_vlan_ctrl)(struct aq_hw_s *self, bool enable);
+
 	int (*hw_multicast_list_set)(struct aq_hw_s *self,
 				     u8 ar_mac[AQ_HW_MULTICAST_ADDRESS_MAX]
 				     [ETH_ALEN],
@@ -207,7 +259,43 @@ struct aq_hw_ops {
 	int (*hw_set_offload)(struct aq_hw_s *self,
 			      struct aq_nic_cfg_s *aq_nic_cfg);
 
+	int (*hw_tx_tc_mode_get)(struct aq_hw_s *self, u32 *tc_mode);
+
+	int (*hw_rx_tc_mode_get)(struct aq_hw_s *self, u32 *tc_mode);
+
+	int (*hw_ring_hwts_rx_fill)(struct aq_hw_s *self,
+				    struct aq_ring_s *aq_ring);
+
+	int (*hw_ring_hwts_rx_receive)(struct aq_hw_s *self,
+				       struct aq_ring_s *ring);
+
+	void (*hw_get_ptp_ts)(struct aq_hw_s *self, u64 *stamp);
+
+	int (*hw_adj_clock_freq)(struct aq_hw_s *self, s32 delta);
+
+	int (*hw_adj_sys_clock)(struct aq_hw_s *self, s64 delta);
+
+	int (*hw_set_sys_clock)(struct aq_hw_s *self, u64 time, u64 ts);
+
+	int (*hw_ts_to_sys_clock)(struct aq_hw_s *self, u64 ts, u64 *time);
+
+	int (*hw_gpio_pulse)(struct aq_hw_s *self, u32 index, u64 start,
+			     u32 period);
+
+	int (*hw_extts_gpio_enable)(struct aq_hw_s *self, u32 index,
+				    u32 enable);
+
+	int (*hw_get_sync_ts)(struct aq_hw_s *self, u64 *ts);
+
+	u16 (*rx_extract_ts)(struct aq_hw_s *self, u8 *p, unsigned int len,
+			     u64 *timestamp);
+
+	int (*extract_hwts)(struct aq_hw_s *self, u8 *p, unsigned int len,
+			    u64 *timestamp);
+
 	int (*hw_set_fc)(struct aq_hw_s *self, u32 fc, u32 tc);
+
+	int (*hw_set_loopback)(struct aq_hw_s *self, u32 mode, bool enable);
 };
 
 struct aq_fw_ops {
@@ -230,12 +318,24 @@ struct aq_fw_ops {
 
 	int (*update_stats)(struct aq_hw_s *self);
 
+	int (*get_phy_temp)(struct aq_hw_s *self, int *temp);
+
 	u32 (*get_flow_control)(struct aq_hw_s *self, u32 *fcmode);
 
 	int (*set_flow_control)(struct aq_hw_s *self);
 
+	int (*led_control)(struct aq_hw_s *self, u32 mode);
+
+	int (*set_phyloopback)(struct aq_hw_s *self, u32 mode, bool enable);
+
 	int (*set_power)(struct aq_hw_s *self, unsigned int power_state,
 			 u8 *mac);
+
+	int (*send_fw_request)(struct aq_hw_s *self,
+			       const struct hw_fw_request_iface *fw_req,
+			       size_t size);
+
+	void (*enable_ptp)(struct aq_hw_s *self, int enable);
 
 	int (*set_eee_rate)(struct aq_hw_s *self, u32 speed);
 

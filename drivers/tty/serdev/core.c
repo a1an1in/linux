@@ -15,6 +15,7 @@
 #include <linux/of_device.h>
 #include <linux/pm_domain.h>
 #include <linux/pm_runtime.h>
+#include <linux/sched.h>
 #include <linux/serdev.h>
 #include <linux/slab.h>
 
@@ -216,6 +217,21 @@ void serdev_device_write_wakeup(struct serdev_device *serdev)
 }
 EXPORT_SYMBOL_GPL(serdev_device_write_wakeup);
 
+/**
+ * serdev_device_write_buf() - write data asynchronously
+ * @serdev:	serdev device
+ * @buf:	data to be written
+ * @count:	number of bytes to write
+ *
+ * Write data to the device asynchronously.
+ *
+ * Note that any accepted data has only been buffered by the controller; use
+ * serdev_device_wait_until_sent() to make sure the controller write buffer
+ * has actually been emptied.
+ *
+ * Return: The number of bytes written (less than count if not enough room in
+ * the write buffer), or a negative errno on errors.
+ */
 int serdev_device_write_buf(struct serdev_device *serdev,
 			    const unsigned char *buf, size_t count)
 {
@@ -228,16 +244,41 @@ int serdev_device_write_buf(struct serdev_device *serdev,
 }
 EXPORT_SYMBOL_GPL(serdev_device_write_buf);
 
+/**
+ * serdev_device_write() - write data synchronously
+ * @serdev:	serdev device
+ * @buf:	data to be written
+ * @count:	number of bytes to write
+ * @timeout:	timeout in jiffies, or 0 to wait indefinitely
+ *
+ * Write data to the device synchronously by repeatedly calling
+ * serdev_device_write() until the controller has accepted all data (unless
+ * interrupted by a timeout or a signal).
+ *
+ * Note that any accepted data has only been buffered by the controller; use
+ * serdev_device_wait_until_sent() to make sure the controller write buffer
+ * has actually been emptied.
+ *
+ * Note that this function depends on serdev_device_write_wakeup() being
+ * called in the serdev driver write_wakeup() callback.
+ *
+ * Return: The number of bytes written (less than count if interrupted),
+ * -ETIMEDOUT or -ERESTARTSYS if interrupted before any bytes were written, or
+ * a negative errno on errors.
+ */
 int serdev_device_write(struct serdev_device *serdev,
 			const unsigned char *buf, size_t count,
-			unsigned long timeout)
+			long timeout)
 {
 	struct serdev_controller *ctrl = serdev->ctrl;
+	int written = 0;
 	int ret;
 
-	if (!ctrl || !ctrl->ops->write_buf ||
-	    (timeout && !serdev->ops->write_wakeup))
+	if (!ctrl || !ctrl->ops->write_buf || !serdev->ops->write_wakeup)
 		return -EINVAL;
+
+	if (timeout == 0)
+		timeout = MAX_SCHEDULE_TIMEOUT;
 
 	mutex_lock(&serdev->write_lock);
 	do {
@@ -247,14 +288,29 @@ int serdev_device_write(struct serdev_device *serdev,
 		if (ret < 0)
 			break;
 
+		written += ret;
 		buf += ret;
 		count -= ret;
 
-	} while (count &&
-		 (timeout = wait_for_completion_timeout(&serdev->write_comp,
-							timeout)));
+		if (count == 0)
+			break;
+
+		timeout = wait_for_completion_interruptible_timeout(&serdev->write_comp,
+								    timeout);
+	} while (timeout > 0);
 	mutex_unlock(&serdev->write_lock);
-	return ret < 0 ? ret : (count ? -ETIMEDOUT : 0);
+
+	if (ret < 0)
+		return ret;
+
+	if (timeout <= 0 && written == 0) {
+		if (timeout == -ERESTARTSYS)
+			return -ERESTARTSYS;
+		else
+			return -ETIMEDOUT;
+	}
+
+	return written;
 }
 EXPORT_SYMBOL_GPL(serdev_device_write);
 
@@ -496,15 +552,96 @@ static int of_serdev_register_devices(struct serdev_controller *ctrl)
 }
 
 #ifdef CONFIG_ACPI
-static acpi_status acpi_serdev_register_device(struct serdev_controller *ctrl,
-					    struct acpi_device *adev)
-{
-	struct serdev_device *serdev = NULL;
-	int err;
 
-	if (acpi_bus_get_status(adev) || !adev->status.present ||
-	    acpi_device_enumerated(adev))
-		return AE_OK;
+#define SERDEV_ACPI_MAX_SCAN_DEPTH 32
+
+struct acpi_serdev_lookup {
+	acpi_handle device_handle;
+	acpi_handle controller_handle;
+	int n;
+	int index;
+};
+
+static int acpi_serdev_parse_resource(struct acpi_resource *ares, void *data)
+{
+	struct acpi_serdev_lookup *lookup = data;
+	struct acpi_resource_uart_serialbus *sb;
+	acpi_status status;
+
+	if (ares->type != ACPI_RESOURCE_TYPE_SERIAL_BUS)
+		return 1;
+
+	if (ares->data.common_serial_bus.type != ACPI_RESOURCE_SERIAL_TYPE_UART)
+		return 1;
+
+	if (lookup->index != -1 && lookup->n++ != lookup->index)
+		return 1;
+
+	sb = &ares->data.uart_serial_bus;
+
+	status = acpi_get_handle(lookup->device_handle,
+				 sb->resource_source.string_ptr,
+				 &lookup->controller_handle);
+	if (ACPI_FAILURE(status))
+		return 1;
+
+	/*
+	 * NOTE: Ideally, we would also want to retreive other properties here,
+	 * once setting them before opening the device is supported by serdev.
+	 */
+
+	return 1;
+}
+
+static int acpi_serdev_do_lookup(struct acpi_device *adev,
+                                 struct acpi_serdev_lookup *lookup)
+{
+	struct list_head resource_list;
+	int ret;
+
+	lookup->device_handle = acpi_device_handle(adev);
+	lookup->controller_handle = NULL;
+	lookup->n = 0;
+
+	INIT_LIST_HEAD(&resource_list);
+	ret = acpi_dev_get_resources(adev, &resource_list,
+				     acpi_serdev_parse_resource, lookup);
+	acpi_dev_free_resource_list(&resource_list);
+
+	if (ret < 0)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int acpi_serdev_check_resources(struct serdev_controller *ctrl,
+				       struct acpi_device *adev)
+{
+	struct acpi_serdev_lookup lookup;
+	int ret;
+
+	if (acpi_bus_get_status(adev) || !adev->status.present)
+		return -EINVAL;
+
+	/* Look for UARTSerialBusV2 resource */
+	lookup.index = -1;	// we only care for the last device
+
+	ret = acpi_serdev_do_lookup(adev, &lookup);
+	if (ret)
+		return ret;
+
+	/* Make sure controller and ResourceSource handle match */
+	if (ACPI_HANDLE(ctrl->dev.parent) != lookup.controller_handle)
+		return -ENODEV;
+
+	return 0;
+}
+
+static acpi_status acpi_serdev_register_device(struct serdev_controller *ctrl,
+					       struct acpi_device *adev)
+{
+	struct serdev_device *serdev;
+	int err;
 
 	serdev = serdev_device_alloc(ctrl);
 	if (!serdev) {
@@ -527,7 +664,7 @@ static acpi_status acpi_serdev_register_device(struct serdev_controller *ctrl,
 }
 
 static acpi_status acpi_serdev_add_device(acpi_handle handle, u32 level,
-				       void *data, void **return_value)
+					  void *data, void **return_value)
 {
 	struct serdev_controller *ctrl = data;
 	struct acpi_device *adev;
@@ -535,22 +672,28 @@ static acpi_status acpi_serdev_add_device(acpi_handle handle, u32 level,
 	if (acpi_bus_get_device(handle, &adev))
 		return AE_OK;
 
+	if (acpi_device_enumerated(adev))
+		return AE_OK;
+
+	if (acpi_serdev_check_resources(ctrl, adev))
+		return AE_OK;
+
 	return acpi_serdev_register_device(ctrl, adev);
 }
+
 
 static int acpi_serdev_register_devices(struct serdev_controller *ctrl)
 {
 	acpi_status status;
-	acpi_handle handle;
 
-	handle = ACPI_HANDLE(ctrl->dev.parent);
-	if (!handle)
+	if (!has_acpi_companion(ctrl->dev.parent))
 		return -ENODEV;
 
-	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, 1,
+	status = acpi_walk_namespace(ACPI_TYPE_DEVICE, ACPI_ROOT_OBJECT,
+				     SERDEV_ACPI_MAX_SCAN_DEPTH,
 				     acpi_serdev_add_device, NULL, ctrl, NULL);
 	if (ACPI_FAILURE(status))
-		dev_dbg(&ctrl->dev, "failed to enumerate serdev slaves\n");
+		dev_warn(&ctrl->dev, "failed to enumerate serdev slaves\n");
 
 	if (!ctrl->serdev)
 		return -ENODEV;

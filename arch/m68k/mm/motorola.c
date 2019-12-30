@@ -55,6 +55,9 @@ static pte_t * __init kernel_page_table(void)
 	pte_t *ptablep;
 
 	ptablep = (pte_t *)memblock_alloc_low(PAGE_SIZE, PAGE_SIZE);
+	if (!ptablep)
+		panic("%s: Failed to allocate %lu bytes align=%lx\n",
+		      __func__, PAGE_SIZE, PAGE_SIZE);
 
 	clear_page(ptablep);
 	__flush_page_to_ram(ptablep);
@@ -79,9 +82,11 @@ static pmd_t * __init kernel_ptr_table(void)
 		 */
 		last = (unsigned long)kernel_pg_dir;
 		for (i = 0; i < PTRS_PER_PGD; i++) {
-			if (!pgd_present(kernel_pg_dir[i]))
+			pud_t *pud = (pud_t *)(&kernel_pg_dir[i]);
+
+			if (!pud_present(*pud))
 				continue;
-			pmd = __pgd_page(kernel_pg_dir[i]);
+			pmd = pgd_page_vaddr(kernel_pg_dir[i]);
 			if (pmd > last)
 				last = pmd;
 		}
@@ -96,6 +101,9 @@ static pmd_t * __init kernel_ptr_table(void)
 	if (((unsigned long)last_pgtable & ~PAGE_MASK) == 0) {
 		last_pgtable = (pmd_t *)memblock_alloc_low(PAGE_SIZE,
 							   PAGE_SIZE);
+		if (!last_pgtable)
+			panic("%s: Failed to allocate %lu bytes align=%lx\n",
+			      __func__, PAGE_SIZE, PAGE_SIZE);
 
 		clear_page(last_pgtable);
 		__flush_page_to_ram(last_pgtable);
@@ -112,6 +120,8 @@ static void __init map_node(int node)
 #define ROOTTREESIZE (32*1024*1024)
 	unsigned long physaddr, virtaddr, size;
 	pgd_t *pgd_dir;
+	p4d_t *p4d_dir;
+	pud_t *pud_dir;
 	pmd_t *pmd_dir;
 	pte_t *pte_dir;
 
@@ -143,14 +153,16 @@ static void __init map_node(int node)
 				continue;
 			}
 		}
-		if (!pgd_present(*pgd_dir)) {
+		p4d_dir = p4d_offset(pgd_dir, virtaddr);
+		pud_dir = pud_offset(p4d_dir, virtaddr);
+		if (!pud_present(*pud_dir)) {
 			pmd_dir = kernel_ptr_table();
 #ifdef DEBUG
 			printk ("[new pointer %p]", pmd_dir);
 #endif
-			pgd_set(pgd_dir, pmd_dir);
+			pud_set(pud_dir, pmd_dir);
 		} else
-			pmd_dir = pmd_offset(pgd_dir, virtaddr);
+			pmd_dir = pmd_offset(pud_dir, virtaddr);
 
 		if (CPU_IS_020_OR_030) {
 			if (virtaddr) {
@@ -228,6 +240,7 @@ void __init paging_init(void)
 
 	min_addr = m68k_memory[0].addr;
 	max_addr = min_addr + m68k_memory[0].size;
+	memblock_add(m68k_memory[0].addr, m68k_memory[0].size);
 	for (i = 1; i < m68k_num_memory;) {
 		if (m68k_memory[i].addr < min_addr) {
 			printk("Ignoring memory chunk at 0x%lx:0x%lx before the first chunk\n",
@@ -238,6 +251,7 @@ void __init paging_init(void)
 				(m68k_num_memory - i) * sizeof(struct m68k_mem_info));
 			continue;
 		}
+		memblock_add(m68k_memory[i].addr, m68k_memory[i].size);
 		addr = m68k_memory[i].addr + m68k_memory[i].size;
 		if (addr > max_addr)
 			max_addr = addr;
@@ -276,6 +290,9 @@ void __init paging_init(void)
 	 * to a couple of allocated pages
 	 */
 	empty_zero_page = memblock_alloc(PAGE_SIZE, PAGE_SIZE);
+	if (!empty_zero_page)
+		panic("%s: Failed to allocate %lu bytes align=0x%lx\n",
+		      __func__, PAGE_SIZE, PAGE_SIZE);
 
 	/*
 	 * Set up SFC/DFC registers
@@ -293,4 +310,3 @@ void __init paging_init(void)
 			node_set_state(i, N_NORMAL_MEMORY);
 	}
 }
-

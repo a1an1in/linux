@@ -1799,19 +1799,12 @@ static int npcm7xx_config_set_one(struct npcm7xx_pinctrl *npcm,
 		npcm_gpio_set(&bank->gc, bank->base + NPCM7XX_GP_N_PU, gpio);
 		break;
 	case PIN_CONFIG_INPUT_ENABLE:
-		if (arg) {
-			iowrite32(gpio, bank->base + NPCM7XX_GP_N_OEC);
-			npcm_gpio_set(&bank->gc, bank->base + NPCM7XX_GP_N_IEM,
-				      gpio);
-		} else
-			npcm_gpio_clr(&bank->gc, bank->base + NPCM7XX_GP_N_IEM,
-				      gpio);
+		iowrite32(gpio, bank->base + NPCM7XX_GP_N_OEC);
+		bank->direction_input(&bank->gc, pin % bank->gc.ngpio);
 		break;
 	case PIN_CONFIG_OUTPUT:
-		npcm_gpio_clr(&bank->gc, bank->base + NPCM7XX_GP_N_IEM, gpio);
-		iowrite32(gpio, arg ? bank->base + NPCM7XX_GP_N_DOS :
-			  bank->base + NPCM7XX_GP_N_DOC);
 		iowrite32(gpio, bank->base + NPCM7XX_GP_N_OES);
+		bank->direction_output(&bank->gc, pin % bank->gc.ngpio, arg);
 		break;
 	case PIN_CONFIG_DRIVE_PUSH_PULL:
 		npcm_gpio_clr(&bank->gc, bank->base + NPCM7XX_GP_N_OTYP, gpio);
@@ -1932,6 +1925,9 @@ static int npcm7xx_gpio_of(struct npcm7xx_pinctrl *pctrl)
 			pctrl->gpio_bank[id].gc.label =
 				devm_kasprintf(pctrl->dev, GFP_KERNEL, "%pOF",
 					       np);
+			if (pctrl->gpio_bank[id].gc.label == NULL)
+				return -ENOMEM;
+
 			pctrl->gpio_bank[id].gc.dbg_show = npcmgpio_dbg_show;
 			pctrl->gpio_bank[id].direction_input =
 				pctrl->gpio_bank[id].gc.direction_input;
@@ -1958,6 +1954,22 @@ static int npcm7xx_gpio_register(struct npcm7xx_pinctrl *pctrl)
 	int ret, id;
 
 	for (id = 0 ; id < pctrl->bank_num ; id++) {
+		struct gpio_irq_chip *girq;
+
+		girq = &pctrl->gpio_bank[id].gc.irq;
+		girq->chip = &pctrl->gpio_bank[id].irq_chip;
+		girq->parent_handler = npcmgpio_irq_handler;
+		girq->num_parents = 1;
+		girq->parents = devm_kcalloc(pctrl->dev, 1,
+					     sizeof(*girq->parents),
+					     GFP_KERNEL);
+		if (!girq->parents) {
+			ret = -ENOMEM;
+			goto err_register;
+		}
+		girq->parents[0] = pctrl->gpio_bank[id].irq;
+		girq->default_type = IRQ_TYPE_NONE;
+		girq->handler = handle_level_irq;
 		ret = devm_gpiochip_add_data(pctrl->dev,
 					     &pctrl->gpio_bank[id].gc,
 					     &pctrl->gpio_bank[id]);
@@ -1976,22 +1988,6 @@ static int npcm7xx_gpio_register(struct npcm7xx_pinctrl *pctrl)
 			gpiochip_remove(&pctrl->gpio_bank[id].gc);
 			goto err_register;
 		}
-
-		ret = gpiochip_irqchip_add(&pctrl->gpio_bank[id].gc,
-					   &pctrl->gpio_bank[id].irq_chip,
-					   0, handle_level_irq,
-					   IRQ_TYPE_NONE);
-		if (ret < 0) {
-			dev_err(pctrl->dev,
-				"Failed to add IRQ chip %u\n", id);
-			gpiochip_remove(&pctrl->gpio_bank[id].gc);
-			goto err_register;
-		}
-
-		gpiochip_set_chained_irqchip(&pctrl->gpio_bank[id].gc,
-					     &pctrl->gpio_bank[id].irq_chip,
-					     pctrl->gpio_bank[id].irq,
-					     npcmgpio_irq_handler);
 	}
 
 	return 0;

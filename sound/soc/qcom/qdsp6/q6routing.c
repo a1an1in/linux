@@ -453,6 +453,9 @@ static int msm_routing_put_audio_mixer(struct snd_kcontrol *kcontrol,
 static const struct snd_kcontrol_new hdmi_mixer_controls[] = {
 	Q6ROUTING_RX_MIXERS(HDMI_RX) };
 
+static const struct snd_kcontrol_new display_port_mixer_controls[] = {
+	Q6ROUTING_RX_MIXERS(DISPLAY_PORT_RX) };
+
 static const struct snd_kcontrol_new primary_mi2s_rx_mixer_controls[] = {
 	Q6ROUTING_RX_MIXERS(PRIMARY_MI2S_RX) };
 
@@ -655,6 +658,10 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 			   hdmi_mixer_controls,
 			   ARRAY_SIZE(hdmi_mixer_controls)),
 
+	SND_SOC_DAPM_MIXER("DISPLAY_PORT_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
+			   display_port_mixer_controls,
+			   ARRAY_SIZE(display_port_mixer_controls)),
+
 	SND_SOC_DAPM_MIXER("SLIMBUS_0_RX Audio Mixer", SND_SOC_NOPM, 0, 0,
 			   slimbus_rx_mixer_controls,
 			   ARRAY_SIZE(slimbus_rx_mixer_controls)),
@@ -833,6 +840,8 @@ static const struct snd_soc_dapm_widget msm_qdsp6_widgets[] = {
 
 static const struct snd_soc_dapm_route intercon[] = {
 	Q6ROUTING_RX_DAPM_ROUTE("HDMI Mixer", "HDMI_RX"),
+	Q6ROUTING_RX_DAPM_ROUTE("DISPLAY_PORT_RX Audio Mixer",
+				"DISPLAY_PORT_RX"),
 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_0_RX Audio Mixer", "SLIMBUS_0_RX"),
 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_1_RX Audio Mixer", "SLIMBUS_1_RX"),
 	Q6ROUTING_RX_DAPM_ROUTE("SLIMBUS_2_RX Audio Mixer", "SLIMBUS_2_RX"),
@@ -930,12 +939,12 @@ static const struct snd_soc_dapm_route intercon[] = {
 
 };
 
-static int routing_hw_params(struct snd_pcm_substream *substream,
-				     struct snd_pcm_hw_params *params)
+static int routing_hw_params(struct snd_soc_component *component,
+			     struct snd_pcm_substream *substream,
+			     struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
-	struct snd_soc_component *c = snd_soc_rtdcom_lookup(rtd, DRV_NAME);
-	struct msm_routing_data *data = dev_get_drvdata(c->dev);
+	struct msm_routing_data *data = dev_get_drvdata(component->dev);
 	unsigned int be_id = rtd->cpu_dai->id;
 	struct session_data *session;
 	int path_type;
@@ -971,10 +980,6 @@ static int routing_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static struct snd_pcm_ops q6pcm_routing_ops = {
-	.hw_params = routing_hw_params,
-};
-
 static int msm_routing_probe(struct snd_soc_component *c)
 {
 	int i;
@@ -988,9 +993,9 @@ static int msm_routing_probe(struct snd_soc_component *c)
 }
 
 static const struct snd_soc_component_driver msm_soc_routing_component = {
-	.ops = &q6pcm_routing_ops,
 	.probe = msm_routing_probe,
 	.name = DRV_NAME,
+	.hw_params = routing_hw_params,
 	.dapm_widgets = msm_qdsp6_widgets,
 	.num_dapm_widgets = ARRAY_SIZE(msm_qdsp6_widgets),
 	.dapm_routes = intercon,

@@ -44,7 +44,7 @@ enum snd_bcm2835_ctrl {
 };
 
 struct bcm2835_vchi_ctx {
-	VCHI_INSTANCE_T vchi_instance;
+	struct vchi_instance_handle *vchi_instance;
 };
 
 /* definition of the chip-specific record */
@@ -77,6 +77,7 @@ struct bcm2835_alsa_stream {
 	unsigned int period_offset;
 	unsigned int buffer_size;
 	unsigned int period_size;
+	ktime_t interpolate_start;
 
 	struct bcm2835_audio_instance *instance;
 	int idx;

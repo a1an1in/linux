@@ -1,5 +1,5 @@
-/* SPDX-License-Identifier: GPL-2.0
- * Marvell OcteonTx2 RVU Admin Function driver
+/* SPDX-License-Identifier: GPL-2.0 */
+/*  Marvell OcteonTx2 RVU Admin Function driver
  *
  * Copyright (C) 2018 Marvell International Ltd.
  *
@@ -27,26 +27,45 @@ enum NPC_LID_E {
 enum npc_kpu_la_ltype {
 	NPC_LT_LA_8023 = 1,
 	NPC_LT_LA_ETHER,
+	NPC_LT_LA_IH_NIX_ETHER,
+	NPC_LT_LA_IH_8_ETHER,
+	NPC_LT_LA_IH_4_ETHER,
+	NPC_LT_LA_IH_2_ETHER,
+	NPC_LT_LA_HIGIG2_ETHER,
+	NPC_LT_LA_IH_NIX_HIGIG2_ETHER,
+	NPC_LT_LA_CUSTOM0 = 0xE,
+	NPC_LT_LA_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lb_ltype {
 	NPC_LT_LB_ETAG = 1,
 	NPC_LT_LB_CTAG,
-	NPC_LT_LB_STAG,
+	NPC_LT_LB_STAG_QINQ,
 	NPC_LT_LB_BTAG,
-	NPC_LT_LB_QINQ,
 	NPC_LT_LB_ITAG,
+	NPC_LT_LB_DSA,
+	NPC_LT_LB_DSA_VLAN,
+	NPC_LT_LB_EDSA,
+	NPC_LT_LB_EDSA_VLAN,
+	NPC_LT_LB_EXDSA,
+	NPC_LT_LB_EXDSA_VLAN,
+	NPC_LT_LB_CUSTOM0 = 0xE,
+	NPC_LT_LB_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lc_ltype {
 	NPC_LT_LC_IP = 1,
+	NPC_LT_LC_IP_OPT,
 	NPC_LT_LC_IP6,
+	NPC_LT_LC_IP6_EXT,
 	NPC_LT_LC_ARP,
 	NPC_LT_LC_RARP,
 	NPC_LT_LC_MPLS,
 	NPC_LT_LC_NSH,
 	NPC_LT_LC_PTP,
 	NPC_LT_LC_FCOE,
+	NPC_LT_LC_CUSTOM0 = 0xE,
+	NPC_LT_LC_CUSTOM1 = 0xF,
 };
 
 /* Don't modify Ltypes upto SCTP, otherwise it will
@@ -57,49 +76,67 @@ enum npc_kpu_ld_ltype {
 	NPC_LT_LD_UDP,
 	NPC_LT_LD_ICMP,
 	NPC_LT_LD_SCTP,
-	NPC_LT_LD_IGMP,
 	NPC_LT_LD_ICMP6,
+	NPC_LT_LD_IGMP = 8,
 	NPC_LT_LD_ESP,
 	NPC_LT_LD_AH,
 	NPC_LT_LD_GRE,
-	NPC_LT_LD_GRE_MPLS,
-	NPC_LT_LD_GRE_NSH,
-	NPC_LT_LD_TU_MPLS,
+	NPC_LT_LD_NVGRE,
+	NPC_LT_LD_NSH,
+	NPC_LT_LD_TU_MPLS_IN_NSH,
+	NPC_LT_LD_TU_MPLS_IN_IP,
+	NPC_LT_LD_CUSTOM0 = 0xE,
+	NPC_LT_LD_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_le_ltype {
-	NPC_LT_LE_TU_ETHER = 1,
-	NPC_LT_LE_TU_PPP,
-	NPC_LT_LE_TU_MPLS_IN_NSH,
-	NPC_LT_LE_TU_3RD_NSH,
+	NPC_LT_LE_VXLAN = 1,
+	NPC_LT_LE_GENEVE,
+	NPC_LT_LE_GTPU = 4,
+	NPC_LT_LE_VXLANGPE,
+	NPC_LT_LE_GTPC,
+	NPC_LT_LE_NSH,
+	NPC_LT_LE_TU_MPLS_IN_GRE,
+	NPC_LT_LE_TU_NSH_IN_GRE,
+	NPC_LT_LE_TU_MPLS_IN_UDP,
+	NPC_LT_LE_CUSTOM0 = 0xE,
+	NPC_LT_LE_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lf_ltype {
-	NPC_LT_LF_TU_IP = 1,
-	NPC_LT_LF_TU_IP6,
-	NPC_LT_LF_TU_ARP,
-	NPC_LT_LF_TU_MPLS_IP,
-	NPC_LT_LF_TU_MPLS_IP6,
-	NPC_LT_LF_TU_MPLS_ETHER,
+	NPC_LT_LF_TU_ETHER = 1,
+	NPC_LT_LF_TU_PPP,
+	NPC_LT_LF_TU_MPLS_IN_VXLANGPE,
+	NPC_LT_LF_TU_NSH_IN_VXLANGPE,
+	NPC_LT_LF_TU_MPLS_IN_NSH,
+	NPC_LT_LF_TU_3RD_NSH,
+	NPC_LT_LF_CUSTOM0 = 0xE,
+	NPC_LT_LF_CUSTOM1 = 0xF,
 };
 
 enum npc_kpu_lg_ltype {
-	NPC_LT_LG_TU_TCP = 1,
-	NPC_LT_LG_TU_UDP,
-	NPC_LT_LG_TU_SCTP,
-	NPC_LT_LG_TU_ICMP,
-	NPC_LT_LG_TU_IGMP,
-	NPC_LT_LG_TU_ICMP6,
-	NPC_LT_LG_TU_ESP,
-	NPC_LT_LG_TU_AH,
+	NPC_LT_LG_TU_IP = 1,
+	NPC_LT_LG_TU_IP6,
+	NPC_LT_LG_TU_ARP,
+	NPC_LT_LG_TU_ETHER_IN_NSH,
+	NPC_LT_LG_CUSTOM0 = 0xE,
+	NPC_LT_LG_CUSTOM1 = 0xF,
 };
 
+/* Don't modify Ltypes upto SCTP, otherwise it will
+ * effect flow tag calculation and thus RSS.
+ */
 enum npc_kpu_lh_ltype {
-	NPC_LT_LH_TCP_DATA = 1,
-	NPC_LT_LH_HTTP_DATA,
-	NPC_LT_LH_HTTPS_DATA,
-	NPC_LT_LH_PPTP_DATA,
-	NPC_LT_LH_UDP_DATA,
+	NPC_LT_LH_TU_TCP = 1,
+	NPC_LT_LH_TU_UDP,
+	NPC_LT_LH_TU_ICMP,
+	NPC_LT_LH_TU_SCTP,
+	NPC_LT_LH_TU_ICMP6,
+	NPC_LT_LH_TU_IGMP = 8,
+	NPC_LT_LH_TU_ESP,
+	NPC_LT_LH_TU_AH,
+	NPC_LT_LH_CUSTOM0 = 0xE,
+	NPC_LT_LH_CUSTOM1 = 0xF,
 };
 
 struct npc_kpu_profile_cam {
@@ -258,5 +295,29 @@ struct nix_rx_action {
 	u64	rsvd_63_61	:3;
 #endif
 };
+
+/* NIX Receive Vtag Action Structure */
+#define VTAG0_VALID_BIT		BIT_ULL(15)
+#define VTAG0_TYPE_MASK		GENMASK_ULL(14, 12)
+#define VTAG0_LID_MASK		GENMASK_ULL(10, 8)
+#define VTAG0_RELPTR_MASK	GENMASK_ULL(7, 0)
+
+struct npc_mcam_kex {
+	/* MKEX Profle Header */
+	u64 mkex_sign; /* "mcam-kex-profile" (8 bytes/ASCII characters) */
+	u8 name[MKEX_NAME_LEN];   /* MKEX Profile name */
+	u64 cpu_model;   /* Format as profiled by CPU hardware */
+	u64 kpu_version; /* KPU firmware/profile version */
+	u64 reserved; /* Reserved for extension */
+
+	/* MKEX Profle Data */
+	u64 keyx_cfg[NPC_MAX_INTF]; /* NPC_AF_INTF(0..1)_KEX_CFG */
+	/* NPC_AF_KEX_LDATA(0..1)_FLAGS_CFG */
+	u64 kex_ld_flags[NPC_MAX_LD];
+	/* NPC_AF_INTF(0..1)_LID(0..7)_LT(0..15)_LD(0..1)_CFG */
+	u64 intf_lid_lt_ld[NPC_MAX_INTF][NPC_MAX_LID][NPC_MAX_LT][NPC_MAX_LD];
+	/* NPC_AF_INTF(0..1)_LDATA(0..1)_FLAGS(0..15)_CFG */
+	u64 intf_ld_flags[NPC_MAX_INTF][NPC_MAX_LD][NPC_MAX_LFL];
+} __packed;
 
 #endif /* NPC_H */

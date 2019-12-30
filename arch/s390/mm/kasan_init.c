@@ -28,7 +28,7 @@ static void __init kasan_early_panic(const char *reason)
 {
 	sclp_early_printk("The Linux kernel failed to boot with the KernelAddressSanitizer:\n");
 	sclp_early_printk(reason);
-	disabled_wait(0);
+	disabled_wait();
 }
 
 static void * __init kasan_early_alloc_segment(void)
@@ -82,7 +82,8 @@ static pte_t * __init kasan_early_pte_alloc(void)
 enum populate_mode {
 	POPULATE_ONE2ONE,
 	POPULATE_MAP,
-	POPULATE_ZERO_SHADOW
+	POPULATE_ZERO_SHADOW,
+	POPULATE_SHALLOW
 };
 static void __init kasan_early_vmemmap_populate(unsigned long address,
 						unsigned long end,
@@ -107,7 +108,8 @@ static void __init kasan_early_vmemmap_populate(unsigned long address,
 			if (mode == POPULATE_ZERO_SHADOW &&
 			    IS_ALIGNED(address, PGDIR_SIZE) &&
 			    end - address >= PGDIR_SIZE) {
-				pgd_populate(&init_mm, pg_dir, kasan_zero_p4d);
+				pgd_populate(&init_mm, pg_dir,
+						kasan_early_shadow_p4d);
 				address = (address + PGDIR_SIZE) & PGDIR_MASK;
 				continue;
 			}
@@ -115,12 +117,19 @@ static void __init kasan_early_vmemmap_populate(unsigned long address,
 			pgd_populate(&init_mm, pg_dir, p4_dir);
 		}
 
+		if (IS_ENABLED(CONFIG_KASAN_S390_4_LEVEL_PAGING) &&
+		    mode == POPULATE_SHALLOW) {
+			address = (address + P4D_SIZE) & P4D_MASK;
+			continue;
+		}
+
 		p4_dir = p4d_offset(pg_dir, address);
 		if (p4d_none(*p4_dir)) {
 			if (mode == POPULATE_ZERO_SHADOW &&
 			    IS_ALIGNED(address, P4D_SIZE) &&
 			    end - address >= P4D_SIZE) {
-				p4d_populate(&init_mm, p4_dir, kasan_zero_pud);
+				p4d_populate(&init_mm, p4_dir,
+						kasan_early_shadow_pud);
 				address = (address + P4D_SIZE) & P4D_MASK;
 				continue;
 			}
@@ -128,12 +137,19 @@ static void __init kasan_early_vmemmap_populate(unsigned long address,
 			p4d_populate(&init_mm, p4_dir, pu_dir);
 		}
 
+		if (!IS_ENABLED(CONFIG_KASAN_S390_4_LEVEL_PAGING) &&
+		    mode == POPULATE_SHALLOW) {
+			address = (address + PUD_SIZE) & PUD_MASK;
+			continue;
+		}
+
 		pu_dir = pud_offset(p4_dir, address);
 		if (pud_none(*pu_dir)) {
 			if (mode == POPULATE_ZERO_SHADOW &&
 			    IS_ALIGNED(address, PUD_SIZE) &&
 			    end - address >= PUD_SIZE) {
-				pud_populate(&init_mm, pu_dir, kasan_zero_pmd);
+				pud_populate(&init_mm, pu_dir,
+						kasan_early_shadow_pmd);
 				address = (address + PUD_SIZE) & PUD_MASK;
 				continue;
 			}
@@ -146,7 +162,8 @@ static void __init kasan_early_vmemmap_populate(unsigned long address,
 			if (mode == POPULATE_ZERO_SHADOW &&
 			    IS_ALIGNED(address, PMD_SIZE) &&
 			    end - address >= PMD_SIZE) {
-				pmd_populate(&init_mm, pm_dir, kasan_zero_pte);
+				pmd_populate(&init_mm, pm_dir,
+						kasan_early_shadow_pte);
 				address = (address + PMD_SIZE) & PMD_MASK;
 				continue;
 			}
@@ -188,8 +205,11 @@ static void __init kasan_early_vmemmap_populate(unsigned long address,
 				pte_val(*pt_dir) = __pa(page) | pgt_prot;
 				break;
 			case POPULATE_ZERO_SHADOW:
-				page = kasan_zero_page;
+				page = kasan_early_shadow_page;
 				pte_val(*pt_dir) = __pa(page) | pgt_prot_zero;
+				break;
+			case POPULATE_SHALLOW:
+				/* should never happen */
 				break;
 			}
 		}
@@ -222,8 +242,6 @@ static void __init kasan_enable_dat(void)
 
 static void __init kasan_early_detect_facilities(void)
 {
-	__stfle(S390_lowcore.stfle_fac_list,
-		ARRAY_SIZE(S390_lowcore.stfle_fac_list));
 	if (test_facility(8)) {
 		has_edat = true;
 		__ctl_set_bit(0, 23);
@@ -232,18 +250,6 @@ static void __init kasan_early_detect_facilities(void)
 		has_nx = true;
 		__ctl_set_bit(0, 20);
 	}
-}
-
-static unsigned long __init get_mem_detect_end(void)
-{
-	unsigned long start;
-	unsigned long end;
-
-	if (mem_detect.count) {
-		__get_mem_detect_block(mem_detect.count - 1, &start, &end);
-		return end;
-	}
-	return 0;
 }
 
 void __init kasan_early_init(void)
@@ -256,14 +262,14 @@ void __init kasan_early_init(void)
 	unsigned long vmax;
 	unsigned long pgt_prot = pgprot_val(PAGE_KERNEL_RO);
 	pte_t pte_z;
-	pmd_t pmd_z = __pmd(__pa(kasan_zero_pte) | _SEGMENT_ENTRY);
-	pud_t pud_z = __pud(__pa(kasan_zero_pmd) | _REGION3_ENTRY);
-	p4d_t p4d_z = __p4d(__pa(kasan_zero_pud) | _REGION2_ENTRY);
+	pmd_t pmd_z = __pmd(__pa(kasan_early_shadow_pte) | _SEGMENT_ENTRY);
+	pud_t pud_z = __pud(__pa(kasan_early_shadow_pmd) | _REGION3_ENTRY);
+	p4d_t p4d_z = __p4d(__pa(kasan_early_shadow_pud) | _REGION2_ENTRY);
 
 	kasan_early_detect_facilities();
 	if (!has_nx)
 		pgt_prot &= ~_PAGE_NOEXEC;
-	pte_z = __pte(__pa(kasan_zero_page) | pgt_prot);
+	pte_z = __pte(__pa(kasan_early_shadow_page) | pgt_prot);
 
 	memsize = get_mem_detect_end();
 	if (!memsize)
@@ -271,6 +277,8 @@ void __init kasan_early_init(void)
 	/* respect mem= cmdline parameter */
 	if (memory_end_set && memsize > memory_end)
 		memsize = memory_end;
+	if (IS_ENABLED(CONFIG_CRASH_DUMP) && OLDMEM_BASE)
+		memsize = min(memsize, OLDMEM_SIZE);
 	memsize = min(memsize, KASAN_SHADOW_START);
 
 	if (IS_ENABLED(CONFIG_KASAN_S390_4_LEVEL_PAGING)) {
@@ -292,10 +300,13 @@ void __init kasan_early_init(void)
 	}
 
 	/* init kasan zero shadow */
-	crst_table_init((unsigned long *)kasan_zero_p4d, p4d_val(p4d_z));
-	crst_table_init((unsigned long *)kasan_zero_pud, pud_val(pud_z));
-	crst_table_init((unsigned long *)kasan_zero_pmd, pmd_val(pmd_z));
-	memset64((u64 *)kasan_zero_pte, pte_val(pte_z), PTRS_PER_PTE);
+	crst_table_init((unsigned long *)kasan_early_shadow_p4d,
+				p4d_val(p4d_z));
+	crst_table_init((unsigned long *)kasan_early_shadow_pud,
+				pud_val(pud_z));
+	crst_table_init((unsigned long *)kasan_early_shadow_pmd,
+				pmd_val(pmd_z));
+	memset64((u64 *)kasan_early_shadow_pte, pte_val(pte_z), PTRS_PER_PTE);
 
 	shadow_alloc_size = memsize >> KASAN_SHADOW_SCALE_SHIFT;
 	pgalloc_low = round_up((unsigned long)_end, _SEGMENT_SIZE);
@@ -318,22 +329,50 @@ void __init kasan_early_init(void)
 	init_mm.pgd = early_pg_dir;
 	/*
 	 * Current memory layout:
-	 * +- 0 -------------+	 +- shadow start -+
-	 * | 1:1 ram mapping |	/| 1/8 ram	  |
-	 * +- end of ram ----+ / +----------------+
-	 * | ... gap ...     |/  |	kasan	  |
-	 * +- shadow start --+	 |	zero	  |
-	 * | 1/8 addr space  |	 |	page	  |
-	 * +- shadow end    -+	 |	mapping	  |
-	 * | ... gap ...     |\  |    (untracked) |
-	 * +- modules vaddr -+ \ +----------------+
-	 * | 2Gb	     |	\|	unmapped  | allocated per module
-	 * +-----------------+	 +- shadow end ---+
+	 * +- 0 -------------+	   +- shadow start -+
+	 * | 1:1 ram mapping |	  /| 1/8 ram	    |
+	 * |		     |	 / |		    |
+	 * +- end of ram ----+	/  +----------------+
+	 * | ... gap ...     | /   |		    |
+	 * |		     |/    |	kasan	    |
+	 * +- shadow start --+	   |	zero	    |
+	 * | 1/8 addr space  |	   |	page	    |
+	 * +- shadow end    -+	   |	mapping	    |
+	 * | ... gap ...     |\    |  (untracked)   |
+	 * +- vmalloc area  -+ \   |		    |
+	 * | vmalloc_size    |	\  |		    |
+	 * +- modules vaddr -+	 \ +----------------+
+	 * | 2Gb	     |	  \|	  unmapped  | allocated per module
+	 * +-----------------+	   +- shadow end ---+
+	 *
+	 * Current memory layout (KASAN_VMALLOC):
+	 * +- 0 -------------+	   +- shadow start -+
+	 * | 1:1 ram mapping |	  /| 1/8 ram	    |
+	 * |		     |	 / |		    |
+	 * +- end of ram ----+	/  +----------------+
+	 * | ... gap ...     | /   |	kasan	    |
+	 * |		     |/    |	zero	    |
+	 * +- shadow start --+	   |	page	    |
+	 * | 1/8 addr space  |	   |	mapping     |
+	 * +- shadow end    -+	   |  (untracked)   |
+	 * | ... gap ...     |\    |		    |
+	 * +- vmalloc area  -+ \   +- vmalloc area -+
+	 * | vmalloc_size    |	\  |shallow populate|
+	 * +- modules vaddr -+	 \ +- modules area -+
+	 * | 2Gb	     |	  \|shallow populate|
+	 * +-----------------+	   +- shadow end ---+
 	 */
 	/* populate kasan shadow (for identity mapping and zero page mapping) */
 	kasan_early_vmemmap_populate(__sha(0), __sha(memsize), POPULATE_MAP);
 	if (IS_ENABLED(CONFIG_MODULES))
 		untracked_mem_end = vmax - MODULES_LEN;
+	if (IS_ENABLED(CONFIG_KASAN_VMALLOC)) {
+		untracked_mem_end = vmax - vmalloc_size - MODULES_LEN;
+		/* shallowly populate kasan shadow for vmalloc and modules */
+		kasan_early_vmemmap_populate(__sha(untracked_mem_end),
+					     __sha(vmax), POPULATE_SHALLOW);
+	}
+	/* populate kasan shadow for untracked memory */
 	kasan_early_vmemmap_populate(__sha(max_physmem_end),
 				     __sha(untracked_mem_end),
 				     POPULATE_ZERO_SHADOW);

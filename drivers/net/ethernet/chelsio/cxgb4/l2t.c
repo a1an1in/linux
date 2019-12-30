@@ -351,15 +351,13 @@ exists:
 static void _t4_l2e_free(struct l2t_entry *e)
 {
 	struct l2t_data *d;
-	struct sk_buff *skb;
 
 	if (atomic_read(&e->refcnt) == 0) {  /* hasn't been recycled */
 		if (e->neigh) {
 			neigh_release(e->neigh);
 			e->neigh = NULL;
 		}
-		while ((skb = __skb_dequeue(&e->arpq)) != NULL)
-			kfree_skb(skb);
+		__skb_queue_purge(&e->arpq);
 	}
 
 	d = container_of(e, struct l2t_data, l2tab[e->idx]);
@@ -370,7 +368,6 @@ static void _t4_l2e_free(struct l2t_entry *e)
 static void t4_l2e_free(struct l2t_entry *e)
 {
 	struct l2t_data *d;
-	struct sk_buff *skb;
 
 	spin_lock_bh(&e->lock);
 	if (atomic_read(&e->refcnt) == 0) {  /* hasn't been recycled */
@@ -378,8 +375,7 @@ static void t4_l2e_free(struct l2t_entry *e)
 			neigh_release(e->neigh);
 			e->neigh = NULL;
 		}
-		while ((skb = __skb_dequeue(&e->arpq)) != NULL)
-			kfree_skb(skb);
+		__skb_queue_purge(&e->arpq);
 	}
 	spin_unlock_bh(&e->lock);
 
@@ -495,14 +491,11 @@ u64 cxgb4_select_ntuple(struct net_device *dev,
 		ntuple |= (u64)IPPROTO_TCP << tp->protocol_shift;
 
 	if (tp->vnic_shift >= 0 && (tp->ingress_config & VNIC_F)) {
-		u32 viid = cxgb4_port_viid(dev);
-		u32 vf = FW_VIID_VIN_G(viid);
-		u32 pf = FW_VIID_PFN_G(viid);
-		u32 vld = FW_VIID_VIVLD_G(viid);
+		struct port_info *pi = (struct port_info *)netdev_priv(dev);
 
-		ntuple |= (u64)(FT_VNID_ID_VF_V(vf) |
-				FT_VNID_ID_PF_V(pf) |
-				FT_VNID_ID_VLD_V(vld)) << tp->vnic_shift;
+		ntuple |= (u64)(FT_VNID_ID_VF_V(pi->vin) |
+				FT_VNID_ID_PF_V(adap->pf) |
+				FT_VNID_ID_VLD_V(pi->vivld)) << tp->vnic_shift;
 	}
 
 	return ntuple;
@@ -649,7 +642,7 @@ struct l2t_data *t4_init_l2t(unsigned int l2t_start, unsigned int l2t_end)
 	if (l2t_size < L2T_MIN_HASH_BUCKETS)
 		return NULL;
 
-	d = kvzalloc(sizeof(*d) + l2t_size * sizeof(struct l2t_entry), GFP_KERNEL);
+	d = kvzalloc(struct_size(d, l2tab, l2t_size), GFP_KERNEL);
 	if (!d)
 		return NULL;
 

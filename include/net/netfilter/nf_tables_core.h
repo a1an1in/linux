@@ -41,7 +41,7 @@ struct nft_immediate_expr {
  */
 static inline u32 nft_cmp_fast_mask(unsigned int len)
 {
-	return cpu_to_le32(~0U >> (FIELD_SIZEOF(struct nft_cmp_fast_expr,
+	return cpu_to_le32(~0U >> (sizeof_field(struct nft_cmp_fast_expr,
 						data) * BITS_PER_BYTE - len));
 }
 
@@ -80,6 +80,22 @@ struct nft_regs;
 struct nft_pktinfo;
 void nft_meta_get_eval(const struct nft_expr *expr,
 		       struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_cmp_eval(const struct nft_expr *expr,
+		  struct nft_regs *regs, const struct nft_pktinfo *pkt);
 void nft_lookup_eval(const struct nft_expr *expr,
+		     struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_payload_eval(const struct nft_expr *expr,
+		      struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_immediate_eval(const struct nft_expr *expr,
+			struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_bitwise_eval(const struct nft_expr *expr,
+		      struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_range_eval(const struct nft_expr *expr,
+		    struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_byteorder_eval(const struct nft_expr *expr,
+			struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_dynset_eval(const struct nft_expr *expr,
+		     struct nft_regs *regs, const struct nft_pktinfo *pkt);
+void nft_rt_get_eval(const struct nft_expr *expr,
 		     struct nft_regs *regs, const struct nft_pktinfo *pkt);
 #endif /* _NET_NF_TABLES_CORE_H */

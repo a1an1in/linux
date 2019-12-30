@@ -27,6 +27,7 @@
 #include <linux/connector.h>
 #include <linux/workqueue.h>
 #include <linux/hyperv.h>
+#include <asm/hyperv-tlfs.h>
 
 #include "hyperv_vmbus.h"
 #include "hv_utils_transport.h"
@@ -437,7 +438,7 @@ kvp_send_key(struct work_struct *dummy)
 			val32 = in_msg->body.kvp_set.data.value_u32;
 			message->body.kvp_set.data.value_size =
 				sprintf(message->body.kvp_set.data.value,
-					"%d", val32) + 1;
+					"%u", val32) + 1;
 			break;
 
 		case REG_U64:
@@ -661,7 +662,7 @@ void hv_kvp_onchannelcallback(void *context)
 	if (kvp_transaction.state > HVUTIL_READY)
 		return;
 
-	vmbus_recvpacket(channel, recv_buffer, PAGE_SIZE * 4, &recvlen,
+	vmbus_recvpacket(channel, recv_buffer, HV_HYP_PAGE_SIZE * 4, &recvlen,
 			 &requestid);
 
 	if (recvlen > 0) {

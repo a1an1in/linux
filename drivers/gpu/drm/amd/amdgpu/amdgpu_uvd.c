@@ -30,7 +30,7 @@
 
 #include <linux/firmware.h>
 #include <linux/module.h>
-#include <drm/drmP.h>
+
 #include <drm/drm.h>
 
 #include "amdgpu.h"
@@ -38,6 +38,8 @@
 #include "amdgpu_uvd.h"
 #include "cikd.h"
 #include "uvd/uvd_4_2_d.h"
+
+#include "amdgpu_ras.h"
 
 /* 1 second timeout */
 #define UVD_IDLE_TIMEOUT	msecs_to_jiffies(1000)
@@ -297,6 +299,7 @@ int amdgpu_uvd_sw_fini(struct amdgpu_device *adev)
 {
 	int i, j;
 
+	cancel_delayed_work_sync(&adev->uvd.idle_work);
 	drm_sched_entity_destroy(&adev->uvd.entity);
 
 	for (j = 0; j < adev->uvd.num_uvd_inst; ++j) {
@@ -372,7 +375,13 @@ int amdgpu_uvd_suspend(struct amdgpu_device *adev)
 		if (!adev->uvd.inst[j].saved_bo)
 			return -ENOMEM;
 
-		memcpy_fromio(adev->uvd.inst[j].saved_bo, ptr, size);
+		/* re-write 0 since err_event_athub will corrupt VCPU buffer */
+		if (amdgpu_ras_intr_triggered()) {
+			DRM_WARN("UVD VCPU state may lost due to RAS ERREVENT_ATHUB_INTERRUPT\n");
+			memset(adev->uvd.inst[j].saved_bo, 0, size);
+		} else {
+			memcpy_fromio(adev->uvd.inst[j].saved_bo, ptr, size);
+		}
 	}
 	return 0;
 }
@@ -692,6 +701,8 @@ static int amdgpu_uvd_cs_msg_decode(struct amdgpu_device *adev, uint32_t *msg,
 	buf_sizes[0x1] = dpb_size;
 	buf_sizes[0x2] = image_size;
 	buf_sizes[0x4] = min_ctx_size;
+	/* store image width to adjust nb memory pstate */
+	adev->uvd.decode_image_width = width;
 	return 0;
 }
 
@@ -1071,7 +1082,7 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 	ib->length_dw = 16;
 
 	if (direct) {
-		r = reservation_object_wait_timeout_rcu(bo->tbo.resv,
+		r = dma_resv_wait_timeout_rcu(bo->tbo.base.resv,
 							true, false,
 							msecs_to_jiffies(10));
 		if (r == 0)
@@ -1083,7 +1094,7 @@ static int amdgpu_uvd_send_msg(struct amdgpu_ring *ring, struct amdgpu_bo *bo,
 		if (r)
 			goto err_free;
 	} else {
-		r = amdgpu_sync_resv(adev, &job->sync, bo->tbo.resv,
+		r = amdgpu_sync_resv(adev, &job->sync, bo->tbo.base.resv,
 				     AMDGPU_FENCE_OWNER_UNDEFINED, false);
 		if (r)
 			goto err_free;
@@ -1243,30 +1254,20 @@ int amdgpu_uvd_ring_test_ib(struct amdgpu_ring *ring, long timeout)
 {
 	struct dma_fence *fence;
 	long r;
-	uint32_t ip_instance = ring->me;
 
 	r = amdgpu_uvd_get_create_msg(ring, 1, NULL);
-	if (r) {
-		DRM_ERROR("amdgpu: (%d)failed to get create msg (%ld).\n", ip_instance, r);
+	if (r)
 		goto error;
-	}
 
 	r = amdgpu_uvd_get_destroy_msg(ring, 1, true, &fence);
-	if (r) {
-		DRM_ERROR("amdgpu: (%d)failed to get destroy ib (%ld).\n", ip_instance, r);
+	if (r)
 		goto error;
-	}
 
 	r = dma_fence_wait_timeout(fence, false, timeout);
-	if (r == 0) {
-		DRM_ERROR("amdgpu: (%d)IB test timed out.\n", ip_instance);
+	if (r == 0)
 		r = -ETIMEDOUT;
-	} else if (r < 0) {
-		DRM_ERROR("amdgpu: (%d)fence wait failed (%ld).\n", ip_instance, r);
-	} else {
-		DRM_DEBUG("ib test on (%d)ring %d succeeded\n", ip_instance, ring->idx);
+	else if (r > 0)
 		r = 0;
-	}
 
 	dma_fence_put(fence);
 

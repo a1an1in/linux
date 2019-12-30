@@ -12,6 +12,7 @@
 #include <linux/kref.h>
 #include <linux/of.h>
 #include <uapi/sound/asound.h>
+#include <uapi/sound/compress_params.h>
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/mm.h>
@@ -36,6 +37,8 @@
 #define ASM_PARAM_ID_ENCDEC_ENC_CFG_BLK_V2	0x00010DA3
 #define ASM_SESSION_CMD_RUN_V2			0x00010DAA
 #define ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2	0x00010DA5
+#define ASM_MEDIA_FMT_MP3			0x00010BE9
+#define ASM_MEDIA_FMT_FLAC			0x00010C16
 #define ASM_DATA_CMD_WRITE_V2			0x00010DAB
 #define ASM_DATA_CMD_READ_V2			0x00010DAC
 #define ASM_SESSION_CMD_SUSPEND			0x00010DEC
@@ -85,6 +88,20 @@ struct asm_multi_channel_pcm_fmt_blk_v2 {
 	u16 is_signed;
 	u16 reserved;
 	u8 channel_mapping[PCM_MAX_NUM_CHANNEL];
+} __packed;
+
+struct asm_flac_fmt_blk_v2 {
+	struct asm_data_cmd_media_fmt_update_v2 fmt_blk;
+	u16 is_stream_info_present;
+	u16 num_channels;
+	u16 min_blk_size;
+	u16 max_blk_size;
+	u16 md5_sum[8];
+	u32 sample_rate;
+	u32 min_frame_size;
+	u32 max_frame_size;
+	u16 sample_size;
+	u16 reserved;
 } __packed;
 
 struct asm_stream_cmd_set_encdec_param {
@@ -868,8 +885,14 @@ int q6asm_open_write(struct audio_client *ac, uint32_t format,
 	open->postprocopo_id = ASM_NULL_POPP_TOPOLOGY;
 
 	switch (format) {
+	case SND_AUDIOCODEC_MP3:
+		open->dec_fmt_id = ASM_MEDIA_FMT_MP3;
+		break;
 	case FORMAT_LINEAR_PCM:
 		open->dec_fmt_id = ASM_MEDIA_FMT_MULTI_CHANNEL_PCM_V2;
+		break;
+	case SND_AUDIOCODEC_FLAC:
+		open->dec_fmt_id = ASM_MEDIA_FMT_FLAC;
 		break;
 	default:
 		dev_err(ac->dev, "Invalid format 0x%x\n", format);
@@ -1016,6 +1039,42 @@ err:
 }
 EXPORT_SYMBOL_GPL(q6asm_media_format_block_multi_ch_pcm);
 
+
+int q6asm_stream_media_format_block_flac(struct audio_client *ac,
+					 struct q6asm_flac_cfg *cfg)
+{
+	struct asm_flac_fmt_blk_v2 *fmt;
+	struct apr_pkt *pkt;
+	void *p;
+	int rc, pkt_size;
+
+	pkt_size = APR_HDR_SIZE + sizeof(*fmt);
+	p = kzalloc(pkt_size, GFP_KERNEL);
+	if (!p)
+		return -ENOMEM;
+
+	pkt = p;
+	fmt = p + APR_HDR_SIZE;
+
+	q6asm_add_hdr(ac, &pkt->hdr, pkt_size, true, ac->stream_id);
+
+	pkt->hdr.opcode = ASM_DATA_CMD_MEDIA_FMT_UPDATE_V2;
+	fmt->fmt_blk.fmt_blk_size = sizeof(*fmt) - sizeof(fmt->fmt_blk);
+	fmt->is_stream_info_present = cfg->stream_info_present;
+	fmt->num_channels = cfg->ch_cfg;
+	fmt->min_blk_size = cfg->min_blk_size;
+	fmt->max_blk_size = cfg->max_blk_size;
+	fmt->sample_rate = cfg->sample_rate;
+	fmt->min_frame_size = cfg->min_frame_size;
+	fmt->max_frame_size = cfg->max_frame_size;
+	fmt->sample_size = cfg->sample_size;
+
+	rc = q6asm_ac_send_cmd_sync(ac, pkt);
+	kfree(pkt);
+
+	return rc;
+}
+EXPORT_SYMBOL_GPL(q6asm_stream_media_format_block_flac);
 /**
  * q6asm_enc_cfg_blk_pcm_format_support() - setup pcm configuration for capture
  *
@@ -1069,6 +1128,7 @@ err:
 	return rc;
 }
 EXPORT_SYMBOL_GPL(q6asm_enc_cfg_blk_pcm_format_support);
+
 
 /**
  * q6asm_read() - read data of period size from audio client
@@ -1189,7 +1249,7 @@ EXPORT_SYMBOL_GPL(q6asm_open_read);
  * q6asm_write_async() - non blocking write
  *
  * @ac: audio client pointer
- * @len: lenght in bytes
+ * @len: length in bytes
  * @msw_ts: timestamp msw
  * @lsw_ts: timestamp lsw
  * @wflags: flags associated with write
